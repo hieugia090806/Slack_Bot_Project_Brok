@@ -1,20 +1,8 @@
 ﻿fastapi==0.115.0
 uvicorn==0.32.0
-slack-bolt==1.21.1
-pydantic==2.9.2
-requests==2.32.3
-psycopg2-binary==2.9.10
-python-dotenv==1.0.1
-
-Set-Location "D:\github_D\Slack_Bot_Project_Brok"
-
-@"
-fastapi==0.115.0
-uvicorn==0.32.0
 gunicorn==23.0.0
 slack-bolt==1.21.1
 pydantic==2.9.2
 requests==2.32.3
 psycopg2-binary==2.9.10
 python-dotenv==1.0.1
-"@ | Out-File -Encoding utf8 "requirements.txt"
