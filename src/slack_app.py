@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from slack_bolt import App
 from slack_bolt.adapter.fastapi import SlackRequestHandler
 
+from src.formatter import build_slack_blocks
 from src.rag import answer_question
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,16 @@ def _reply_to_query(client, channel: str, thread_ts: str, user_id: str, query: s
         logger.exception("Failed to answer Slack query")
         answer = "I could not search the knowledge base right now. Please try again later."
 
-    client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=answer)
+    answer_body, source_text = answer, ""
+    if "\n\nSources: " in answer:
+        answer_body, source_text = answer.split("\n\nSources: ", 1)
+    sources = [source.strip() for source in source_text.split(";") if source.strip()]
+    client.chat_postMessage(
+        channel=channel,
+        thread_ts=thread_ts,
+        text=answer,
+        blocks=build_slack_blocks(answer_body, sources),
+    )
 
 
 def _submit_query(client, event: dict, query: str):

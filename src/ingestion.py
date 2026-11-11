@@ -1,9 +1,16 @@
+# SUMMARY: Scans mock_docs/ for markdown files, parses them into searchable chunks, and populates the vector store.
+"""Load local markdown knowledge files and add their chunks to the vector store.
+
+Run from the repository root with ``python src/ingestion.py``. If
+``DATABASE_URL`` is configured, the store writes to PostgreSQL/pgvector; without
+it, chunks are loaded into an in-memory store for local execution.
+"""
+
+from __future__ import annotations
+
 import hashlib
-import re
 from pathlib import Path
 from typing import Any
-
-from src.vector_store import SQLiteVectorStore, get_vector_store
 
 try:
     from dotenv import load_dotenv
@@ -12,16 +19,29 @@ try:
 except ImportError:
     pass
 
+try:
+    from src.vector_store import InMemoryVectorStore, PostgresVectorStore, get_vector_store
+    from src.embedding import chunk_text
+    from src.sanitization import sanitize_and_mask
+except ModuleNotFoundError:  # Supports the documented ``python src/ingestion.py`` command.
+    from vector_store import InMemoryVectorStore, PostgresVectorStore, get_vector_store
+    from embedding import chunk_text
+    from sanitization import sanitize_and_mask
+
 MOCK_DOCS_DIR = Path(__file__).resolve().parents[1] / "mock_docs"
 
 
-def load_local_mock_docs() -> list[dict[str, Any]]:
-    pages = []
-    for path in sorted(MOCK_DOCS_DIR.glob("*.md")):
-        source = path.relative_to(MOCK_DOCS_DIR.parent).as_posix()
+def load_markdown_documents(directory: Path = MOCK_DOCS_DIR) -> list[dict[str, Any]]:
+    """Read all markdown files recursively, preserving useful source metadata."""
+    pages: list[dict[str, Any]] = []
+    if not directory.exists():
+        return pages
+    for path in sorted(directory.rglob("*.md")):
+        relative_path = path.relative_to(directory).as_posix()
+        source = f"mock_docs/{relative_path}"
         pages.append(
             {
-                "text": path.read_text(encoding="utf-8-sig"),
+                "text": sanitize_and_mask(path.read_text(encoding="utf-8-sig")),
                 "metadata": {
                     "page_id": source,
                     "title": path.stem.replace("_", " ").replace("-", " ").title(),
@@ -33,46 +53,39 @@ def load_local_mock_docs() -> list[dict[str, Any]]:
     return pages
 
 
-def _fallback_split(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
-    words = re.findall(r"\S+", text)
-    if not words:
-        return []
-    step = max(1, chunk_size - chunk_overlap)
-    return [" ".join(words[start : start + chunk_size]) for start in range(0, len(words), step)]
+def split_text(text: str, chunk_size: int = 512, chunk_overlap: int = 64) -> list[str]:
+    """Compatibility wrapper around the shared Layer 2 chunking pipeline."""
+    return chunk_text(text, chunk_size=chunk_size, overlap=chunk_overlap)
 
 
 def chunk_documents(
-    pages: list[dict[str, Any]], chunk_size: int = 512, chunk_overlap: int = 200
+    pages: list[dict[str, Any]], chunk_size: int = 512, chunk_overlap: int = 64
 ) -> list[dict[str, Any]]:
-    try:
-        from llama_index.core.node_parser import SentenceSplitter
-
-        splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        split_text = splitter.split_text
-    except ImportError:
-        split_text = lambda text: _fallback_split(text, chunk_size, chunk_overlap)
-
-    chunks = []
+    """Convert pages into stable, uniquely identified chunk records."""
+    chunks: list[dict[str, Any]] = []
     for page in pages:
-        metadata = page["metadata"]
-        for index, content in enumerate(split_text(page["text"])):
-            if not content.strip():
-                continue
-            chunk_metadata = {**metadata, "chunk_index": index}
-            chunk_id = hashlib.sha256(
-                f"{metadata['page_id']}:{index}".encode("utf-8")
-            ).hexdigest()
+        metadata = dict(page.get("metadata", {}))
+        page_id = str(metadata.get("page_id") or metadata.get("source") or "document")
+        for index, content in enumerate(split_text(page.get("text", ""), chunk_size, chunk_overlap)):
+            chunk_id = hashlib.sha256(f"{page_id}:{index}".encode("utf-8")).hexdigest()
             chunks.append(
-                {"id": chunk_id, "content": content, "metadata": chunk_metadata}
+                {"id": chunk_id, "content": content, "metadata": {**metadata, "chunk_index": index}}
             )
     return chunks
 
 
-def ingest_local_docs(store: SQLiteVectorStore | None = None) -> int:
-    chunks = chunk_documents(load_local_mock_docs())
-    return (store or get_vector_store()).upsert(chunks)
+def ingest_local_docs(
+    store: PostgresVectorStore | InMemoryVectorStore | None = None,
+    directory: Path = MOCK_DOCS_DIR,
+) -> int:
+    """Read, chunk, and add all local markdown documents; return chunks added."""
+    chunks = chunk_documents(load_markdown_documents(directory))
+    if not chunks:
+        return 0
+    return (store or get_vector_store()).add_documents(chunks)
 
 
 if __name__ == "__main__":
-    count = ingest_local_docs()
-    print(f"Indexed {count} chunks from {MOCK_DOCS_DIR}")
+    print(f"Loading markdown documents from {MOCK_DOCS_DIR}...")
+    added = ingest_local_docs()
+    print(f"Successfully added {added} chunks to the vector store.")
