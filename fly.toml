@@ -7,7 +7,7 @@ app = 'slack-bot-project-brok-glimmering-meadowlark-3127'
 primary_region = 'sin'
 
 [build]
-  builder = 'paketobuildpacks/builder:base'
+  dockerfile = 'Dockerfile'
 
 [env]
   PORT = '8080'
@@ -20,22 +20,17 @@ primary_region = 'sin'
   min_machines_running = 0
   processes = ['app']
 
-[[services]]
-  protocol = 'tcp'
-  internal_port = 8080
+[http_service.concurrency]
+  type = 'connections'
+  hard_limit = 25
+  soft_limit = 20
 
-  [[services.ports]]
-    port = 80
-    handlers = ['http']
-
-  [[services.ports]]
-    port = 443
-    handlers = ['tls', 'http']
-
-  [services.concurrency]
-    type = 'connections'
-    hard_limit = 25
-    soft_limit = 20
+[[http_service.checks]]
+  grace_period = '10s'
+  interval = '30s'
+  method = 'GET'
+  timeout = '5s'
+  path = '/health'
 
 [[vm]]
   memory = '1gb'
