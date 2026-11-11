@@ -1,13 +1,8 @@
-# fly.toml app configuration file generated for slack-bot-project-brok-glimmering-meadowlark-3127 on 2026-11-11T14:53:00+07:00
-#
-# See https://docs.fly.io/reference/configuration for information about how to use this file.
-#
-
 app = 'slack-bot-project-brok-glimmering-meadowlark-3127'
 primary_region = 'sin'
 
 [build]
-  dockerfile = 'Dockerfile'
+  builder = 'paketobuildpacks/builder:base'
 
 [env]
   PORT = '8080'
@@ -20,17 +15,26 @@ primary_region = 'sin'
   min_machines_running = 0
   processes = ['app']
 
-[http_service.concurrency]
-  type = 'connections'
-  hard_limit = 25
-  soft_limit = 20
+[[services]]
+  protocol = 'tcp'
+  internal_port = 8080
 
-[[http_service.checks]]
-  grace_period = '10s'
-  interval = '30s'
-  method = 'GET'
-  timeout = '5s'
-  path = '/health'
+  [[services.ports]]
+    port = 80
+    handlers = ['http']
+
+  [[services.ports]]
+    port = 443
+    handlers = ['tls', 'http']
+
+  [services.concurrency]
+    type = 'connections'
+    hard_limit = 25
+    soft_limit = 20
+
+# Force Uvicorn instead of looking for Gunicorn
+[processes]
+  app = "uvicorn src.main:app --host 0.0.0.0 --port 8080"
 
 [[vm]]
   memory = '1gb'
