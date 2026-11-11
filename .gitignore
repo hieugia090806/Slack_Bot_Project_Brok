@@ -5,3 +5,4 @@ venv/
 *.pyc
 data/
 *.sqlite3
+.env.example
