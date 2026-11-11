@@ -1,10 +1,9 @@
 ﻿fastapi==0.115.0
 uvicorn==0.32.0
 slack-bolt==1.21.1
-pydantic==2.9.2
+pydantic==2.11.5
 requests==2.32.3
 psycopg2-binary==2.9.10
 python-dotenv==1.0.1
 
-openai==1.58.1
 llama-index-core==0.12.52
