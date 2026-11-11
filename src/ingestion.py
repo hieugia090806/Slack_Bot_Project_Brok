@@ -1,5 +1,5 @@
-# SUMMARY: Scans mock_docs/ for markdown files, parses them into searchable chunks, and populates the vector store.
-"""Load local markdown knowledge files and add their chunks to the vector store.
+# SUMMARY: Scans mock_docs/ and Confluence REST API for knowledge files, parses them into searchable chunks, and populates the vector store.
+"""Load local and Confluence knowledge files and add their chunks to the vector store.
 
 Run from the repository root with ``python src/ingestion.py``. If
 ``DATABASE_URL`` is configured, the store writes to PostgreSQL/pgvector; without
@@ -9,8 +9,11 @@ it, chunks are loaded into an in-memory store for local execution.
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
+import requests
+from requests.auth import HTTPBasicAuth
 
 try:
     from dotenv import load_dotenv
@@ -53,6 +56,52 @@ def load_markdown_documents(directory: Path = MOCK_DOCS_DIR) -> list[dict[str, A
     return pages
 
 
+def fetch_confluence_pages() -> list[dict[str, Any]]:
+    """Fetch pages from the Confluence REST API v2 using environment secrets."""
+    domain = os.environ.get("CONFLUENCE_DOMAIN")
+    email = os.environ.get("CONFLUENCE_EMAIL")
+    api_token = os.environ.get("CONFLUENCE_API_TOKEN")
+
+    if not domain or not email or not api_token:
+        print("Confluence credentials not fully set. Skipping remote Confluence ingestion.")
+        return []
+
+    url = f"{domain}/wiki/api/v2/pages?body-format=storage"
+    auth = HTTPBasicAuth(email, api_token)
+    headers = {"Accept": "application/json"}
+
+    pages = []
+    try:
+        response = requests.get(url, auth=auth, headers=headers, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            for item in data.get("results", []):
+                title = item.get("title")
+                page_id = item.get("id")
+                body = item.get("body", {}).get("storage", {}).get("value", "")
+                
+                # Basic sanitization of the Confluence storage format text
+                cleaned_body = sanitize_and_mask(body)
+                source_url = f"{domain}/wiki/spaces/COS40005/pages/{page_id}"
+
+                pages.append({
+                    "text": cleaned_body,
+                    "metadata": {
+                        "page_id": str(page_id),
+                        "title": title,
+                        "url": source_url,
+                        "source": "confluence"
+                    }
+                })
+            print(f"Successfully fetched {len(pages)} pages from Confluence.")
+        else:
+            print(f"Failed to fetch Confluence pages: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Error connecting to Confluence API: {e}")
+
+    return pages
+
+
 def split_text(text: str, chunk_size: int = 512, chunk_overlap: int = 64) -> list[str]:
     """Compatibility wrapper around the shared Layer 2 chunking pipeline."""
     return chunk_text(text, chunk_size=chunk_size, overlap=chunk_overlap)
@@ -78,14 +127,15 @@ def ingest_local_docs(
     store: PostgresVectorStore | InMemoryVectorStore | None = None,
     directory: Path = MOCK_DOCS_DIR,
 ) -> int:
-    """Read, chunk, and add all local markdown documents; return chunks added."""
-    chunks = chunk_documents(load_markdown_documents(directory))
+    """Read, chunk, and add all local markdown and remote Confluence documents; return chunks added."""
+    all_pages = load_markdown_documents(directory) + fetch_confluence_pages()
+    chunks = chunk_documents(all_pages)
     if not chunks:
         return 0
     return (store or get_vector_store()).add_documents(chunks)
 
 
 if __name__ == "__main__":
-    print(f"Loading markdown documents from {MOCK_DOCS_DIR}...")
+    print(f"Loading documents from local path {MOCK_DOCS_DIR} and Confluence workspace...")
     added = ingest_local_docs()
     print(f"Successfully added {added} chunks to the vector store.")
