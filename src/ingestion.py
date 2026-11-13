@@ -35,11 +35,19 @@ TIMEOUT_SECONDS = 20
 
 
 def _credentials() -> tuple[str, str, str] | None:
-    url = os.environ.get("CONFLUENCE_URL", "").strip().rstrip("/")
-    username = os.environ.get("CONFLUENCE_USERNAME", "").strip()
-    token = os.environ.get("CONFLUENCE_API_TOKEN", "").strip()
-    if not all((url, username, token)):
-        print("WARNING: Missing CONFLUENCE_URL, CONFLUENCE_USERNAME, or CONFLUENCE_API_TOKEN.")
+    """Read only explicitly configured Confluence credentials; never invent defaults."""
+    url = os.getenv("CONFLUENCE_URL", "").strip().rstrip("/")
+    username = os.getenv("CONFLUENCE_USERNAME", "").strip()
+    token = os.getenv("CONFLUENCE_API_TOKEN", "").strip()
+    missing = [
+        name for name, value in (
+            ("CONFLUENCE_URL", url),
+            ("CONFLUENCE_USERNAME", username),
+            ("CONFLUENCE_API_TOKEN", token),
+        ) if not value
+    ]
+    if missing:
+        print(f"WARNING: Missing Confluence configuration: {', '.join(missing)}.")
         return None
     return url, username, token
 
