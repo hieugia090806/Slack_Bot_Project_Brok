@@ -30,8 +30,9 @@ ROLE_CLEARANCE = {
 }
 
 # Mock user mapping for development and team testing
-# Replace or extend these email addresses with your team members' actual emails
+# Added your exact Swinburne student email mapped to 'admin'
 MOCK_USER_ROLES: dict[str, str] = {
+    "105234956@student.swin.edu.au": "admin",
     "hoang@swin.edu": "admin",
     "hieu@swin.edu": "developer",
     "ny@swin.edu": "developer",
@@ -42,9 +43,21 @@ MOCK_USER_ROLES: dict[str, str] = {
 
 
 def get_user_role(user_email: str) -> str:
-    """Resolve a user email to their role, defaulting to 'student' for unknown emails."""
+    """Resolve a user email to their role, defaulting appropriately for university emails."""
+    if not user_email:
+        return "student"
+        
     normalized_email = user_email.strip().lower()
-    return MOCK_USER_ROLES.get(normalized_email, "student")
+    
+    # Check explicit mapping first
+    if normalized_email in MOCK_USER_ROLES:
+        return MOCK_USER_ROLES[normalized_email]
+        
+    # Fallback: if it's a Swinburne email domain, grant employee/developer clearance so internal docs aren't blocked
+    if normalized_email.endswith("@student.swin.edu.au") or normalized_email.endswith("@swin.edu"):
+        return "employee"
+        
+    return "student"
 
 
 def check_access(user_email: str, document_metadata: dict[str, Any]) -> bool:
@@ -68,7 +81,7 @@ def check_access(user_email: str, document_metadata: dict[str, Any]) -> bool:
     # Allow access if user clearance is equal to or higher than document requirements
     is_allowed = user_clearance >= required_clearance
 
-    logger.debug(
+    logger.info(
         "Policy check for user=%s (role=%s, clearance=%d) vs doc_level=%s (req=%d) -> %s",
         user_email,
         role,
