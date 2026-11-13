@@ -79,7 +79,7 @@ def generate_embeddings(chunks: list[str]) -> list[list[float]]:
     """
     if not chunks:
         return []
-    api_key = os.getenv("SLACK_API_KEY")
+    api_key = os.getenv("SLACK_API_KEY") or os.getenv("GEMINI_API_KEY")
     if api_key:
         try:
             from google import genai
@@ -103,10 +103,11 @@ def generate_embeddings(chunks: list[str]) -> list[list[float]]:
                 if not result.embeddings or len(result.embeddings) != len(batch_texts):
                     raise ValueError("Gemini returned an incomplete embedding batch")
                 vectors.extend(list(item.values) for item in result.embeddings)
-            logger.info("Gemini embeddings active with model %s", EMBEDDING_MODEL)
+            logger.info("Gemini embedding batches succeeded with model %s", EMBEDDING_MODEL)
             return vectors
-        except Exception:
-            logger.warning("Gemini embeddings failed; using local embeddings", exc_info=True)
+        except Exception as exc:
+            status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            logger.warning("Gemini embedding model %s failed (status=%s); using local embeddings: %s", EMBEDDING_MODEL, status, exc)
     else:
-        logger.info("SLACK_API_KEY missing; Gemini embeddings disabled, using local embeddings")
+        logger.info("SLACK_API_KEY and GEMINI_API_KEY missing; Gemini embeddings disabled, using local embeddings")
     return [_local_embedding(chunk) for chunk in chunks]

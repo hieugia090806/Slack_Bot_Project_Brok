@@ -47,26 +47,47 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
     from google import genai
     from google.genai import types
 
+    api_key = os.getenv("SLACK_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        logger.warning("Gemini answer generation unavailable: set SLACK_API_KEY or GEMINI_API_KEY")
+        raise RuntimeError("Gemini API key is missing")
+
     context = "\n\n".join(
         f"[{index}] {match['metadata'].get('title', 'Untitled')} "
         f"({match['metadata'].get('url', '')})\n{match['content']}"
         for index, match in enumerate(matches, start=1)
     )
-    client = genai.Client(api_key=os.environ["SLACK_API_KEY"])
-    logger.info("Gemini answer generation active with model gemini-3.8-flash")
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=f"Question: {query}\n\nAuthorized Confluence context:\n{context}",
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            system_instruction=(
-                "Answer only using facts explicitly stated in the provided Confluence context. "
-                "If the answer is absent, state that clearly without guessing. Write a clean, "
-                "conversational summary and use bullets where useful. Do not output citations."
-            ),
-        ),
-    )
-    return response.text or "I could not generate an answer."
+    client = genai.Client(api_key=api_key)
+    models = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-flash"]
+    failures: list[str] = []
+    for model in models:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=f"Question: {query}\n\nAuthorized Confluence context:\n{context}",
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    system_instruction=(
+                        "Answer only using facts explicitly stated in the provided Confluence context. "
+                        "If the answer is absent, state that clearly without guessing. Write a clean, "
+                        "conversational summary and use bullets where useful. Do not output citations."
+                    ),
+                ),
+            )
+            if response.text:
+                logger.info("Gemini answer generation succeeded with model %s", model)
+                return response.text
+            raise RuntimeError("Gemini returned an empty response")
+        except Exception as exc:
+            status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            message = f"{model}: {type(exc).__name__} status={status} {exc}"
+            failures.append(message)
+            if status in (404, 503, "404", "503"):
+                logger.warning("Gemini model %s unavailable (status %s); trying next fallback", model, status)
+                continue
+            logger.warning("Gemini model %s failed; trying next fallback: %s", model, message)
+    logger.error("All Gemini answer models failed: %s", " | ".join(failures))
+    raise RuntimeError("All configured Gemini answer models failed")
 
 
 def answer_question(query: str, user_email: str) -> dict[str, Any]:
@@ -78,14 +99,14 @@ def answer_question(query: str, user_email: str) -> dict[str, Any]:
     if not matches:
         return {"answer": "I could not find any indexed documents to answer that question.", "sources": []}
 
-    if os.getenv("SLACK_API_KEY"):
+    if os.getenv("SLACK_API_KEY") or os.getenv("GEMINI_API_KEY"):
         try:
             answer = _gemini_answer(clean_query, matches)
         except Exception:
             logger.exception("Gemini answer generation failed; returning safe extractive fallback")
             answer = _local_answer(matches)
     else:
-        logger.info("SLACK_API_KEY missing; Gemini answer generation disabled, using safe extractive fallback")
+        logger.warning("Neither SLACK_API_KEY nor GEMINI_API_KEY is set; using safe extractive fallback")
         answer = _local_answer(matches)
 
     sources = []
