@@ -8,11 +8,10 @@ import logging
 import math
 import os
 import re
-import math
 
 logger = logging.getLogger(__name__)
 VECTOR_DIMENSIONS = 384
-EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_MODEL = "text-embedding-004"
 
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 200) -> list[str]:
@@ -72,23 +71,31 @@ def _local_embedding(text: str) -> list[float]:
 
 
 def generate_embeddings(chunks: list[str]) -> list[list[float]]:
-    """Return OpenAI embeddings when configured, otherwise local feature hashes.
+    """Return Gemini dense embeddings or deterministic local feature hashes.
 
     Missing SDKs, absent credentials, and API errors all fall back locally so
     indexing and queries remain usable without external services.
     """
     if not chunks:
         return []
-    if os.getenv("OPENAI_API_KEY"):
+    api_key = os.getenv("SLACK_API_KEY")
+    if api_key:
         try:
-            from openai import OpenAI
+            from google import genai
 
-            response = OpenAI().embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=chunks,
-                dimensions=VECTOR_DIMENSIONS,
-            )
-            return [list(item.embedding) for item in sorted(response.data, key=lambda item: item.index)]
+            client = genai.Client(api_key=api_key)
+            vectors = []
+            for text in chunks:
+                result = client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=text,
+                    config={"output_dimensionality": VECTOR_DIMENSIONS},
+                )
+                vectors.append(list(result.embeddings[0].values))
+            logger.info("Gemini embeddings active with model %s", EMBEDDING_MODEL)
+            return vectors
         except Exception:
-            logger.warning("Remote embeddings unavailable; using local embeddings", exc_info=True)
+            logger.warning("Gemini embeddings failed; using local embeddings", exc_info=True)
+    else:
+        logger.info("SLACK_API_KEY missing; Gemini embeddings disabled, using local embeddings")
     return [_local_embedding(chunk) for chunk in chunks]

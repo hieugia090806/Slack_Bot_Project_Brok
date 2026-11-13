@@ -43,30 +43,30 @@ def _local_answer(matches: list[dict[str, Any]]) -> str:
     return "Here's what I found:\n" + "\n".join(f"• {point}" for point in points)
 
 
-def _openai_answer(query: str, matches: list[dict[str, Any]]) -> str:
-    from openai import OpenAI
+def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
+    from google import genai
+    from google.genai import types
 
     context = "\n\n".join(
         f"[{index}] {match['metadata'].get('title', 'Untitled')} "
         f"({match['metadata'].get('url', '')})\n{match['content']}"
         for index, match in enumerate(matches, start=1)
     )
-    response = OpenAI().chat.completions.create(
-        model=os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
-        temperature=0,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Write a concise, natural conversational summary based only on supplied context. "
-                    "Do not quote raw chunks or include citations in the answer. Say when the context "
-                    "does not answer the question. Do not invent facts."
-                ),
-            },
-            {"role": "user", "content": f"Question: {query}\n\nContext:\n{context}"},
-        ],
+    client = genai.Client(api_key=os.environ["SLACK_API_KEY"])
+    logger.info("Gemini answer generation active with model gemini-2.5-flash")
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=f"Question: {query}\n\nAuthorized Confluence context:\n{context}",
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            system_instruction=(
+                "Answer only using facts explicitly stated in the provided Confluence context. "
+                "If the answer is absent, state that clearly without guessing. Write a clean, "
+                "conversational summary and use bullets where useful. Do not output citations."
+            ),
+        ),
     )
-    return response.choices[0].message.content or "I could not generate an answer."
+    return response.text or "I could not generate an answer."
 
 
 def answer_question(query: str, user_email: str) -> dict[str, Any]:
@@ -78,13 +78,14 @@ def answer_question(query: str, user_email: str) -> dict[str, Any]:
     if not matches:
         return {"answer": "I could not find any indexed documents to answer that question.", "sources": []}
 
-    if os.getenv("OPENAI_API_KEY"):
+    if os.getenv("SLACK_API_KEY"):
         try:
-            answer = _openai_answer(clean_query, matches)
+            answer = _gemini_answer(clean_query, matches)
         except Exception:
-            logger.exception("OpenAI answer generation failed; returning retrieved text")
+            logger.exception("Gemini answer generation failed; returning safe extractive fallback")
             answer = _local_answer(matches)
     else:
+        logger.info("SLACK_API_KEY missing; Gemini answer generation disabled, using safe extractive fallback")
         answer = _local_answer(matches)
 
     sources = []
