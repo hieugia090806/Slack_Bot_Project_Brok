@@ -156,7 +156,7 @@ def chunk_documents(
     return chunks
 
 
-def ingest_confluence_docs(
+def ingest_local_docs(
     store: PostgresVectorStore | InMemoryVectorStore | None = None,
 ) -> int:
     """Fetch only live COS40005 pages, then add non-empty chunks to the store."""
@@ -173,4 +173,4 @@ if __name__ == "__main__":
         test_confluence_connection()
     else:
         print(f"Loading documents exclusively from Confluence space {SPACE_KEY}...")
-        print(f"Successfully added {ingest_confluence_docs()} chunks to the vector store.")
+        print(f"Successfully added {ingest_local_docs()} chunks to the vector store.")

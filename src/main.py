@@ -3,19 +3,19 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from src.slack_app import slack_handler   # We need the SlackRequestHandler, not just the App
-from src.ingestion import ingest_confluence_docs
+from src.ingestion import ingest_local_docs
 
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
-        added = ingest_confluence_docs()
+        added = ingest_local_docs()
         logger.info("Startup Confluence ingestion indexed %d chunks", added)
     except Exception:
         # Keep service startup available during a temporary remote dependency outage.
         # No local documents are substituted.
-        logger.exception("Startup Confluence ingestion failed")
+        logger.warning("Startup Confluence ingestion failed; continuing server startup", exc_info=True)
     yield
 
 
