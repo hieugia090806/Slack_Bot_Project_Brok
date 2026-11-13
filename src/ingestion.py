@@ -58,15 +58,17 @@ def load_markdown_documents(directory: Path = MOCK_DOCS_DIR) -> list[dict[str, A
 
 def fetch_confluence_pages() -> list[dict[str, Any]]:
     """Fetch pages from the Confluence REST API v2 using environment secrets."""
-    domain = os.environ.get("CONFLUENCE_DOMAIN")
-    email = os.environ.get("CONFLUENCE_EMAIL")
+    domain = os.environ.get("CONFLUENCE_URL")  # e.g., https://c45.atlassian.net/wiki
+    email = os.environ.get("CONFLUENCE_USERNAME")  # Your Atlassian account email
     api_token = os.environ.get("CONFLUENCE_API_TOKEN")
 
     if not domain or not email or not api_token:
         print("Confluence credentials not fully set. Skipping remote Confluence ingestion.")
         return []
 
-    url = f"{domain}/wiki/api/v2/pages?body-format=storage"
+    # Clean trailing slash if present
+    base_url = domain.rstrip("/")
+    url = f"{base_url}/api/v2/pages?body-format=storage"
     auth = HTTPBasicAuth(email, api_token)
     headers = {"Accept": "application/json"}
 
@@ -80,9 +82,8 @@ def fetch_confluence_pages() -> list[dict[str, Any]]:
                 page_id = item.get("id")
                 body = item.get("body", {}).get("storage", {}).get("value", "")
                 
-                # Basic sanitization of the Confluence storage format text
                 cleaned_body = sanitize_and_mask(body)
-                source_url = f"{domain}/wiki/spaces/COS40005/pages/{page_id}"
+                source_url = f"{base_url}/spaces/COS40005/pages/{page_id}"
 
                 pages.append({
                     "text": cleaned_body,
