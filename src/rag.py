@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import Any
 
 from src.policy import check_access, get_user_role, ROLE_CLEARANCE
@@ -58,7 +59,18 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
         for index, match in enumerate(matches, start=1)
     )
     client = genai.Client(api_key=api_key)
-    models = ["gemini-3.8-flash", "gemini-2.0-flash", "gemini-flash"]
+    fallback_models = [
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-4-argon",
+        "gemini-4-carbon",
+    ]
+    override_model = os.getenv("GEMINI_CHAT_MODEL", "").strip()
+    models = ([override_model] if override_model else []) + [
+        model for model in fallback_models if model != override_model
+    ]
     failures: list[str] = []
     for model in models:
         try:
@@ -75,7 +87,7 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
                 ),
             )
             if response.text:
-                logger.info("Gemini answer generation succeeded with model %s", model)
+                logger.info("✅ SUCCESS: Gemini answer generated using model: %s", model)
                 return response.text
             raise RuntimeError("Gemini returned an empty response")
         except Exception as exc:
@@ -84,6 +96,11 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
             failures.append(message)
             if status in (404, 503, "404", "503"):
                 logger.warning("Gemini model %s unavailable (status %s); trying next fallback", model, status)
+                if status in (503, "503"):
+                    time.sleep(1.5)
+                continue
+            if status in (429, "429"):
+                logger.warning("Gemini model %s rate limited (429); trying next fallback", model)
                 continue
             logger.warning("Gemini model %s failed; trying next fallback: %s", model, message)
     logger.error("All Gemini answer models failed: %s", " | ".join(failures))
