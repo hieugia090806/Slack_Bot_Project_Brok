@@ -11,7 +11,8 @@ import re
 
 logger = logging.getLogger(__name__)
 VECTOR_DIMENSIONS = 384
-EMBEDDING_MODEL = "text-embedding-004"
+EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_BATCH_SIZE = 50
 
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 200) -> list[str]:
@@ -82,16 +83,26 @@ def generate_embeddings(chunks: list[str]) -> list[list[float]]:
     if api_key:
         try:
             from google import genai
+            from google.genai import types
 
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(
+                    timeout=15_000,
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
+            )
             vectors = []
-            for text in chunks:
+            for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
+                batch_texts = chunks[start : start + EMBEDDING_BATCH_SIZE]
                 result = client.models.embed_content(
                     model=EMBEDDING_MODEL,
-                    contents=text,
-                    config={"output_dimensionality": VECTOR_DIMENSIONS},
+                    contents=batch_texts,
+                    config=types.EmbedContentConfig(output_dimensionality=VECTOR_DIMENSIONS),
                 )
-                vectors.append(list(result.embeddings[0].values))
+                if not result.embeddings or len(result.embeddings) != len(batch_texts):
+                    raise ValueError("Gemini returned an incomplete embedding batch")
+                vectors.extend(list(item.values) for item in result.embeddings)
             logger.info("Gemini embeddings active with model %s", EMBEDDING_MODEL)
             return vectors
         except Exception:
