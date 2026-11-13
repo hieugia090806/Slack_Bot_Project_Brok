@@ -8,6 +8,13 @@ from src.sanitization import sanitize_and_mask
 from src.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
+GEMINI_CHAT_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.8-flash",
+    "gemma-4-27b-it",
+]
 
 
 def retrieve(query: str, top_k: int = 3, user_email: str = "") -> list[dict[str, Any]]:
@@ -59,17 +66,9 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
         for index, match in enumerate(matches, start=1)
     )
     client = genai.Client(api_key=api_key)
-    fallback_models = [
-        "gemini-3.8-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
-        "gemini-4-argon",
-        "gemini-4-carbon",
-    ]
     override_model = os.getenv("GEMINI_CHAT_MODEL", "").strip()
     models = ([override_model] if override_model else []) + [
-        model for model in fallback_models if model != override_model
+        model for model in GEMINI_CHAT_MODELS if model != override_model
     ]
     failures: list[str] = []
     for model in models:
@@ -107,6 +106,31 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
     raise RuntimeError("All configured Gemini answer models failed")
 
 
+def check_gemini_connectivity() -> dict[str, str]:
+    """Ping each configured answer model and report connectivity without exposing the key."""
+    api_key = os.getenv("SLACK_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        logger.error("Gemini connectivity check failed: SLACK_API_KEY and GEMINI_API_KEY are unset")
+        return {model: "NO_API_KEY" for model in GEMINI_CHAT_MODELS}
+    try:
+        from google import genai
+    except ImportError:
+        logger.error("Gemini connectivity check failed: google-genai is not installed")
+        return {model: "SDK_MISSING" for model in GEMINI_CHAT_MODELS}
+    client = genai.Client(api_key=api_key)
+    results: dict[str, str] = {}
+    for model in GEMINI_CHAT_MODELS:
+        try:
+            response = client.models.generate_content(model=model, contents="Reply only: OK")
+            results[model] = "CONNECTED" if response.text else "EMPTY_RESPONSE"
+            logger.info("Gemini connectivity: model=%s status=%s", model, results[model])
+        except Exception as exc:
+            status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            results[model] = f"ERROR status={status} {type(exc).__name__}"
+            logger.warning("Gemini connectivity: model=%s status=%s error=%s", model, status, exc)
+    return results
+
+
 def answer_question(query: str, user_email: str) -> dict[str, Any]:
     clean_query = sanitize_and_mask(query)
     if not clean_query.strip():
@@ -141,3 +165,15 @@ def answer_question(query: str, user_email: str) -> dict[str, Any]:
             sources.append({"title": title, "url": url, "space": space})
     logger.info("Answer generated query=%r retrieved=%d citations=%s", clean_query, len(matches), [s["url"] for s in sources])
     return {"answer": answer, "sources": sources}
+
+
+if __name__ == "__main__" and "--check" in os.sys.argv:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+    logging.basicConfig(level=logging.INFO)
+    outcomes = check_gemini_connectivity()
+    for model_name, outcome in outcomes.items():
+        print(f"{model_name}: {outcome}")
