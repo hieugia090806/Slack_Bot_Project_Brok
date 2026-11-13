@@ -15,14 +15,14 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 200) -> list[str]:
-    """Split text into overlapping word windows with predictable local behavior."""
+    """Split normalized text into overlapping character windows."""
     if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
         raise ValueError("chunk_size must be positive and overlap smaller than chunk_size")
-    words = re.findall(r"\S+", text or "")
-    if not words:
+    normalized_text = " ".join((text or "").split())
+    if not normalized_text:
         return []
     step = chunk_size - overlap
-    return [" ".join(words[start : start + chunk_size]) for start in range(0, len(words), step)]
+    return [normalized_text[start : start + chunk_size] for start in range(0, len(normalized_text), step)]
 
 
 def _local_embedding(text: str) -> list[float]:

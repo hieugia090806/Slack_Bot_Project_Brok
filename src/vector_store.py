@@ -1,4 +1,4 @@
-# SUMMARY: Manages vector storage with a robust fallback to local in-memory mock data so the bot works instantly without a live database.
+# SUMMARY: Manages vector storage with a live-document-only in-memory fallback.
 """Vector storage for Brok's document chunks.
 
 PostgreSQL is used when ``DATABASE_URL`` is set. The database must have the
@@ -15,17 +15,13 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
 from threading import RLock
 from typing import Any
 
 try:
     from src.embedding import VECTOR_DIMENSIONS, generate_embeddings
-    from src.sanitization import sanitize_and_mask
-    from src.embedding import chunk_text
 except ModuleNotFoundError:  # Supports direct execution of src/ingestion.py.
-    from embedding import VECTOR_DIMENSIONS, chunk_text, generate_embeddings
-    from sanitization import sanitize_and_mask
+    from embedding import VECTOR_DIMENSIONS, generate_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +56,9 @@ class InMemoryVectorStore:
 
     def add_documents(self, chunks: list[dict[str, Any]]) -> int:
         """Insert or replace chunks by id and return the number accepted."""
+        chunks = [chunk for chunk in chunks if isinstance(chunk, dict) and isinstance(chunk.get("content"), str) and chunk["content"].strip()]
+        if not chunks:
+            return 0
         _validate_chunks(chunks)
         vectors = _embed([chunk["content"] for chunk in chunks])
         with self._lock:
@@ -129,6 +128,7 @@ class PostgresVectorStore:
 
     def add_documents(self, chunks: list[dict[str, Any]]) -> int:
         """Upsert chunks and embeddings in one transaction; return inserted count."""
+        chunks = [chunk for chunk in chunks if isinstance(chunk, dict) and isinstance(chunk.get("content"), str) and chunk["content"].strip()]
         if not chunks:
             return 0
         _validate_chunks(chunks)
@@ -156,7 +156,7 @@ class PostgresVectorStore:
                         rows,
                     )
         except Exception as exc:
-            logger.warning("PostgreSQL insert failed; switching to in-memory mock data: %s", exc)
+            logger.exception("PostgreSQL insert failed; using the process-local empty/live index")
             return _switch_to_fallback().add_documents(chunks)
         return len(rows)
 
@@ -184,7 +184,7 @@ class PostgresVectorStore:
                     )
                     rows = cursor.fetchall()
         except Exception as exc:
-            logger.warning("PostgreSQL search failed; switching to in-memory mock data: %s", exc)
+            logger.warning("PostgreSQL search failed; using process-local indexed documents: %s", exc)
             return _switch_to_fallback().search(query_text, top_k)
         return [
             {"content": content, "metadata": metadata if isinstance(metadata, dict) else json.loads(metadata), "score": float(score)}
@@ -197,41 +197,12 @@ _store_lock = RLock()
 
 
 def _build_fallback_store() -> InMemoryVectorStore:
-    """Create an in-memory index from local markdown, or a useful built-in sample."""
-    store = InMemoryVectorStore()
-    docs_dir = Path(__file__).resolve().parents[1] / "mock_docs"
-    chunks: list[dict[str, Any]] = []
-    if docs_dir.exists():
-        for path in sorted(docs_dir.rglob("*.md")):
-            source = f"mock_docs/{path.relative_to(docs_dir).as_posix()}"
-            try:
-                content = sanitize_and_mask(path.read_text(encoding="utf-8-sig"))
-                for index, part in enumerate(chunk_text(content, chunk_size=512, overlap=64)):
-                    chunks.append({
-                        "id": hashlib.sha256(f"{source}:{index}".encode()).hexdigest(),
-                        "content": part,
-                        "metadata": {
-                            "page_id": source,
-                            "source": source,
-                            "url": source,
-                            "title": path.stem.replace("_", " ").replace("-", " ").title(),
-                            "chunk_index": index,
-                        },
-                    })
-            except OSError:
-                logger.warning("Could not read local mock document %s", path, exc_info=True)
-    if not chunks:
-        chunks.append({
-            "id": "sample-katalon-policy",
-            "content": "Katalon internal knowledge base. Standard software testing guidelines, version control practices, and deployment protocols for team members.",
-            "metadata": {"title": "Katalon Internal Policy", "source": "mock_docs/sample_policy.md", "url": "mock_docs/sample_policy.md"},
-        })
-    store.add_documents(chunks)
-    return store
+    """Create an empty process-local store; only ingestion can add live pages."""
+    return InMemoryVectorStore()
 
 
 def _switch_to_fallback() -> InMemoryVectorStore:
-    """Replace the process store with seeded local content after DB failure."""
+    """Replace an unavailable database with an empty process-local store."""
     global _default_store
     with _store_lock:
         if not isinstance(_default_store, InMemoryVectorStore):
@@ -249,9 +220,9 @@ def get_vector_store() -> PostgresVectorStore | InMemoryVectorStore:
                 try:
                     _default_store = PostgresVectorStore(database_url)
                 except Exception as exc:
-                    logger.warning("PostgreSQL unavailable; using in-memory mock data: %s", exc)
+                    logger.warning("PostgreSQL unavailable; using an empty in-memory store: %s", exc)
                     _default_store = _build_fallback_store()
             else:
-                logger.info("DATABASE_URL is unset; using in-memory vector store")
+                logger.info("DATABASE_URL is unset; using empty in-memory vector store")
                 _default_store = _build_fallback_store()
         return _default_store

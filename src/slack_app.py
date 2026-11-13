@@ -3,6 +3,12 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from slack_bolt import App
 from slack_bolt.adapter.fastapi import SlackRequestHandler
 
