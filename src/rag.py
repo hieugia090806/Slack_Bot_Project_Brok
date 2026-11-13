@@ -53,9 +53,9 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
         for index, match in enumerate(matches, start=1)
     )
     client = genai.Client(api_key=os.environ["SLACK_API_KEY"])
-    logger.info("Gemini answer generation active with model gemini-2.5-flash")
+    logger.info("Gemini answer generation active with model gemini-3.8-flash")
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         contents=f"Question: {query}\n\nAuthorized Confluence context:\n{context}",
         config=types.GenerateContentConfig(
             temperature=0.1,
