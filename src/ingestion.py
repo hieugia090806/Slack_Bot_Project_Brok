@@ -1,11 +1,13 @@
 # SUMMARY: Scans Confluence REST API for knowledge files, parses them into searchable chunks, and populates the vector store.
-"""Load Confluence knowledge files and add their chunks to the vector store."""
+"""Load Confluence knowledge files and add their chunks to the vector store.
+
+Run from the repository root with ``python src/ingestion.py``.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import os
-from pathlib import Path
 from typing import Any
 import requests
 from requests.auth import HTTPBasicAuth
@@ -60,7 +62,8 @@ def fetch_confluence_pages() -> list[dict[str, Any]]:
                         "page_id": str(page_id),
                         "title": title,
                         "url": source_url,
-                        "source": "confluence"
+                        "source": "confluence",
+                        "security_level": "internal"
                     }
                 })
             print(f"Successfully fetched {len(pages)} pages from Confluence.")
@@ -94,7 +97,7 @@ def chunk_documents(
 def ingest_local_docs(
     store: PostgresVectorStore | InMemoryVectorStore | None = None,
 ) -> int:
-    """Read, chunk, and add live Confluence documents; return chunks added."""
+    """Read, chunk, and add live Confluence documents exclusively; return chunks added."""
     all_pages = fetch_confluence_pages()
     chunks = chunk_documents(all_pages)
     if not chunks:
@@ -103,6 +106,6 @@ def ingest_local_docs(
 
 
 if __name__ == "__main__":
-    print("Loading documents from Confluence workspace...")
+    print("Loading documents exclusively from Confluence workspace...")
     added = ingest_local_docs()
     print(f"Successfully added {added} chunks to the vector store.")
