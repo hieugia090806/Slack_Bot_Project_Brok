@@ -1,5 +1,10 @@
 # SUMMARY: Layer 2 Chunking & Embedding generation pipeline.
-"""Dependency-light chunking and embeddings for local and hosted execution."""
+"""Stäbler-inspired sentence windows and dense embeddings for Layer 2.
+
+Uses approximate token counts with 512-token target windows and 200-token
+sentence overlap, Gemini dense vectors when configured, and deterministic
+feature hashing for zero-configuration local execution. This is not BGE-M3.
+"""
 
 from __future__ import annotations
 

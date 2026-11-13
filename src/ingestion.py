@@ -1,4 +1,9 @@
-"""Fetch and index live pages from the COS40005 Confluence space."""
+"""MemTrust Layer 1 extraction and Layer 2 handoff.
+
+Fetches live COS40005 pages over Confluence REST v2, sanitizes and masks their
+storage bodies, preserves page provenance, and submits non-empty sentence
+chunks to the vector store. No RA-TLS transport stub is implemented here.
+"""
 
 from __future__ import annotations
 
@@ -31,15 +36,10 @@ TIMEOUT_SECONDS = 20
 
 def _credentials() -> tuple[str, str, str] | None:
     url = os.environ.get("CONFLUENCE_URL", "").strip().rstrip("/")
-    # CONFLUENCE_EMAIL is the key used by this project's .env; keep the
-    # username alias for deployments configured with the newer example file.
-    username = (
-        os.environ.get("CONFLUENCE_EMAIL", "").strip()
-        or os.environ.get("CONFLUENCE_USERNAME", "").strip()
-    )
+    username = os.environ.get("CONFLUENCE_USERNAME", "").strip()
     token = os.environ.get("CONFLUENCE_API_TOKEN", "").strip()
     if not all((url, username, token)):
-        print("WARNING: Missing CONFLUENCE_URL, CONFLUENCE_EMAIL (or CONFLUENCE_USERNAME), or CONFLUENCE_API_TOKEN.")
+        print("WARNING: Missing CONFLUENCE_URL, CONFLUENCE_USERNAME, or CONFLUENCE_API_TOKEN.")
         return None
     return url, username, token
 

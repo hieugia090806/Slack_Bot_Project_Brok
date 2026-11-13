@@ -1,5 +1,5 @@
 # SUMMARY: Slack Delivery Zone Block Kit formatter for rich cards and citations.
-"""Build Slack Block Kit messages with readable answers and source citations."""
+"""AIRA Layer 4 presentation: render generated answers and source metadata in Block Kit."""
 
 from __future__ import annotations
 

@@ -1,11 +1,11 @@
 # SUMMARY: Manages vector storage with a live-document-only in-memory fallback.
-"""Vector storage for Brok's document chunks.
+"""MemTrust-inspired Layer 3 storage for chunks and provenance metadata.
 
 PostgreSQL is used when ``DATABASE_URL`` is set. The database must have the
 pgvector extension available to its user. For local use without a database URL,
 an in-memory store and deterministic feature-hash embeddings keep the RAG path
-usable without additional services. When an OpenAI key and SDK are available,
-embeddings are generated with OpenAI's ``text-embedding-3-small`` model.
+usable without additional services. pgvector uses dense cosine search. There
+are no sealed segments or OPA integration; access checks are in ``policy.py``.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ except ModuleNotFoundError:  # Supports direct execution of src/ingestion.py.
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_MODEL = "gemini-embedding-001"
 
 
 def _local_embedding(text: str) -> list[float]:

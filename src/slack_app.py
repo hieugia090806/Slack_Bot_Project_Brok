@@ -31,12 +31,14 @@ slack_handler = SlackRequestHandler(slack_app)
 def _reply_to_query(client, channel: str, thread_ts: str, user_id: str, query: str):
     try:
         response = client.users_info(user=user_id)
-        user_email = response.get("user", {}).get("profile", {}).get("email") or user_id
+        user_email = response.get("user", {}).get("profile", {}).get("email") or ""
+        logger.info("Slack query identity resolved user_id=%s email_available=%s", user_id, bool(user_email))
     except Exception:
         logger.warning("Could not look up Slack email for %s", user_id, exc_info=True)
-        user_email = user_id
+        user_email = ""
 
     try:
+        logger.info("Processing Slack query for user_id=%s email_available=%s", user_id, bool(user_email))
         answer = answer_question(query, user_email)
     except Exception:
         logger.exception("Failed to answer Slack query")

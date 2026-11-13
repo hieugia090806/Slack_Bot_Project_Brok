@@ -1,3 +1,5 @@
+"""AIRA Layer 4 query, authorized retrieval, grounded generation, and citations."""
+
 import logging
 import os
 import time

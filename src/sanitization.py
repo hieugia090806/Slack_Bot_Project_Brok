@@ -1,5 +1,9 @@
 # SUMMARY: Layer 1 Sanitization & PII Masking engine with local fallback.
-"""Clean user and document text before it enters the retrieval pipeline."""
+"""MemTrust Layer 1 text boundary: clean Confluence HTML/macros and mask PII.
+
+This standard-library sanitizer is a local-safe implementation, not a complete
+data-loss-prevention or zero-trust transport system.
+"""
 
 from __future__ import annotations
 

@@ -1,8 +1,9 @@
 # SUMMARY: Layer 3 Governance & Access Policy Engine for document retrieval authorization.
-"""Document authorization policy engine supporting student role-based access control (RBAC).
+"""MemTrust-inspired Layer 3 application RBAC gate.
 
-Maps user emails (such as team @swin.edu addresses) to access levels and compares
-them against document metadata security classifications.
+Maps user emails to roles and compares clearance with document metadata
+classifications before RAG supplies chunks to answer generation. This is a
+local policy implementation, not an OPA service integration.
 """
 
 from __future__ import annotations
