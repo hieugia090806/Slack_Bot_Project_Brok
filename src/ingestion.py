@@ -118,7 +118,8 @@ def fetch_confluence_pages() -> list[dict[str, Any]]:
     base_url, username, token = credentials
     try:
         pages, _ = _fetch_pages(requests.Session(), base_url, HTTPBasicAuth(username, token))
-        print(f"Successfully discovered {len(pages)} pages in Confluence space {SPACE_KEY}.")
+        sanitized_count = sum(bool(page.get("text", "").strip()) for page in pages)
+        print(f"Confluence {SPACE_KEY}: fetched {len(pages)} pages; sanitized non-empty pages: {sanitized_count}.")
         return pages
     except (requests.RequestException, ValueError, KeyError) as exc:
         print(f"Error connecting to Confluence API: {exc}")

@@ -43,6 +43,9 @@ def sanitize_and_mask(text: str) -> str:
     if not isinstance(text, str):
         return ""
     try:
+        # Remove Confluence storage macro blocks before extracting visible text.
+        text = re.sub(r"(?is)<ac:structured-macro\b[^>]*>.*?</ac:structured-macro>", " ", text)
+        text = re.sub(r"(?is)<!--.*?-->|<ac:.*?>|</ac:.*?>", " ", text)
         parser = _TextExtractor()
         parser.feed(text)
         clean = html.unescape(" ".join(parser.parts))

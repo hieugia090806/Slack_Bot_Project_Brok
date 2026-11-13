@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import math
 
 logger = logging.getLogger(__name__)
 VECTOR_DIMENSIONS = 384
@@ -15,14 +16,46 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 def chunk_text(text: str, chunk_size: int = 512, overlap: int = 200) -> list[str]:
-    """Split normalized text into overlapping character windows."""
+    """Split on sentence boundaries with approximate token windows and overlap."""
     if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
         raise ValueError("chunk_size must be positive and overlap smaller than chunk_size")
-    normalized_text = " ".join((text or "").split())
-    if not normalized_text:
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join((text or "").split()))
+    sentences = [sentence for sentence in sentences if sentence]
+    if not sentences:
         return []
-    step = chunk_size - overlap
-    return [normalized_text[start : start + chunk_size] for start in range(0, len(normalized_text), step)]
+    chunks: list[str] = []
+    current: list[str] = []
+    count = 0
+    for sentence in sentences:
+        sentence_tokens = len(re.findall(r"\w+|[^\w\s]", sentence))
+        if current and count + sentence_tokens > chunk_size:
+            chunks.append(" ".join(current))
+            tail: list[str] = []
+            tail_count = 0
+            for previous in reversed(current):
+                previous_count = len(re.findall(r"\w+|[^\w\s]", previous))
+                if tail_count + previous_count > overlap:
+                    break
+                tail.insert(0, previous)
+                tail_count += previous_count
+            current, count = tail, tail_count
+        current.append(sentence)
+        count += sentence_tokens
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def generate_sparse_embeddings(texts: list[str]) -> list[dict[str, float]]:
+    """Return normalized term-frequency vectors for sparse retrieval."""
+    sparse = []
+    for text in texts:
+        counts: dict[str, float] = {}
+        for term in re.findall(r"[\w'-]+", text.lower()):
+            counts[term] = counts.get(term, 0.0) + 1.0
+        norm = math.sqrt(sum(value * value for value in counts.values())) or 1.0
+        sparse.append({term: value / norm for term, value in counts.items()})
+    return sparse
 
 
 def _local_embedding(text: str) -> list[float]:

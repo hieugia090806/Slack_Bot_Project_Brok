@@ -2,7 +2,7 @@ import logging
 import os
 from typing import Any
 
-from src.policy import check_access
+from src.policy import check_access, get_user_role, ROLE_CLEARANCE
 from src.sanitization import sanitize_and_mask
 from src.vector_store import get_vector_store
 
@@ -13,7 +13,14 @@ def retrieve(query: str, top_k: int = 3, user_email: str = "") -> list[dict[str,
     """Sanitize a query, search the store, then apply the policy decision seam."""
     clean_query = sanitize_and_mask(query)
     matches = get_vector_store().search(clean_query, top_k=top_k)
-    return [match for match in matches if check_access(user_email, match.get("metadata", {}))]
+    logger.info("Retrieval query=%r top_n=%d candidates=%d", clean_query, top_k, len(matches))
+    allowed = []
+    for match in matches:
+        permitted = check_access(user_email, match.get("metadata", {}))
+        logger.info("RBAC user=%s role=%s clearance=%d chunk=%s decision=%s", user_email, get_user_role(user_email), ROLE_CLEARANCE.get(get_user_role(user_email), 1), match.get("metadata", {}).get("page_id"), "allowed" if permitted else "filtered")
+        if permitted:
+            allowed.append(match)
+    return allowed
 
 
 def _source_label(metadata: dict[str, Any]) -> str:
@@ -25,14 +32,15 @@ def _source_label(metadata: dict[str, Any]) -> str:
 
 
 def _local_answer(matches: list[dict[str, Any]]) -> str:
-    excerpt = matches[0]["content"].strip()
-    title = matches[0]["metadata"].get("title", "Untitled")
-    if title == "Brok Assistant":
-        return excerpt
-    return (
-        f"From the indexed documents, the relevant information is:\n> {excerpt}\n\n"
-        f"({title}, n.d.)"
-    )
+    """Synthesize a concise response rather than returning a chopped excerpt."""
+    points = []
+    for match in matches[:3]:
+        text = " ".join(match["content"].split())
+        if text and text not in points:
+            points.append(text)
+    if not points:
+        return "I couldn't find relevant information in the indexed pages."
+    return "Here's what I found:\n" + "\n".join(f"• {point}" for point in points)
 
 
 def _openai_answer(query: str, matches: list[dict[str, Any]]) -> str:
@@ -50,10 +58,9 @@ def _openai_answer(query: str, matches: list[dict[str, Any]]) -> str:
             {
                 "role": "system",
                 "content": (
-                    "Answer strictly from the supplied context. If it does not contain "
-                    "the answer, say so plainly. Cite claims in APA-style using the "
-                    "document title and n.d. when no publication date is available. "
-                    "Do not invent sources or facts."
+                    "Write a concise, natural conversational summary based only on supplied context. "
+                    "Do not quote raw chunks or include citations in the answer. Say when the context "
+                    "does not answer the question. Do not invent facts."
                 ),
             },
             {"role": "user", "content": f"Question: {query}\n\nContext:\n{context}"},
@@ -62,14 +69,14 @@ def _openai_answer(query: str, matches: list[dict[str, Any]]) -> str:
     return response.choices[0].message.content or "I could not generate an answer."
 
 
-def answer_question(query: str, user_email: str) -> str:
+def answer_question(query: str, user_email: str) -> dict[str, Any]:
     clean_query = sanitize_and_mask(query)
     if not clean_query.strip():
-        return "Please include a question so I can search the knowledge base."
+        return {"answer": "Please include a question so I can search the knowledge base.", "sources": []}
 
     matches = retrieve(clean_query, top_k=3, user_email=user_email)
     if not matches:
-        return "I could not find any indexed documents to answer that question."
+        return {"answer": "I could not find any indexed documents to answer that question.", "sources": []}
 
     if os.getenv("OPENAI_API_KEY"):
         try:
@@ -89,7 +96,9 @@ def answer_question(query: str, user_email: str) -> str:
         key = metadata.get("page_id") or metadata.get("source")
         if key not in seen:
             seen.add(key)
-            sources.append(_source_label(metadata))
-    if sources:
-        answer += "\n\nSources: " + "; ".join(sources)
-    return answer
+            title = metadata.get("title", "Untitled")
+            url = metadata.get("url", "")
+            space = metadata.get("space_key", "COS40005")
+            sources.append({"title": title, "url": url, "space": space})
+    logger.info("Answer generated query=%r retrieved=%d citations=%s", clean_query, len(matches), [s["url"] for s in sources])
+    return {"answer": answer, "sources": sources}

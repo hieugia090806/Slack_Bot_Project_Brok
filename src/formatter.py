@@ -27,14 +27,19 @@ def _source_badge(source: str) -> str:
     return f"📄 {label}"
 
 
-def build_slack_blocks(answer: str, sources: list[str]) -> list[dict]:
+def build_slack_blocks(answer: str, sources: list[dict]) -> list[dict]:
     """Create a compact Block Kit card with an answer and citation badges."""
     blocks: list[dict] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": (answer or "I could not generate an answer.")[:_MAX_SECTION_CHARS]}}
     ]
-    badges = [_source_badge(source) for source in sources if source.strip()]
-    for start in range(0, len(badges), 10):
-        blocks.append({"type": "context", "elements": [
-            {"type": "mrkdwn", "text": badge[:2000]} for badge in badges[start : start + 10]
-        ]})
+    if sources:
+        blocks.append({"type": "header", "text": {"type": "plain_text", "text": "Sources"}})
+        for source in sources[:20]:
+            title = str(source.get("title", "Untitled")).replace("<", "&lt;").replace(">", "&gt;")
+            url = str(source.get("url", ""))
+            space = str(source.get("space", "COS40005"))
+            citation = f"• *Source:* {title} (Space: `{space}`)"
+            if url.startswith(("https://", "http://")):
+                citation = f"• *Source:* <{url}|{title}> (Space: `{space}`)"
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": citation}})
     return blocks[:50]

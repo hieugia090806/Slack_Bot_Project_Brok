@@ -42,14 +42,13 @@ def _reply_to_query(client, channel: str, thread_ts: str, user_id: str, query: s
         logger.exception("Failed to answer Slack query")
         answer = "I could not search the knowledge base right now. Please try again later."
 
-    answer_body, source_text = answer, ""
-    if "\n\nSources: " in answer:
-        answer_body, source_text = answer.split("\n\nSources: ", 1)
-    sources = [source.strip() for source in source_text.split(";") if source.strip()]
+    answer_body = answer.get("answer", "I couldn't generate a response.") if isinstance(answer, dict) else str(answer)
+    sources = answer.get("sources", []) if isinstance(answer, dict) else []
+    logger.info("Sending Slack response citations=%s", [source.get("url") for source in sources])
     client.chat_postMessage(
         channel=channel,
         thread_ts=thread_ts,
-        text=answer,
+        text=answer_body,
         blocks=build_slack_blocks(answer_body, sources),
     )
 
