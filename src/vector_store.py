@@ -27,6 +27,21 @@ logger = logging.getLogger(__name__)
 EMBEDDING_MODEL = "gemini-embedding-001"
 
 
+def _title_match_boost(query_text: str, title: str) -> float:
+    """Give exact or strong title matches a small, backend-independent lift."""
+    stop_words = {"a", "an", "and", "are", "for", "in", "is", "of", "the", "to", "what", "who"}
+    query_terms = set(re.findall(r"[a-z0-9]+", query_text.lower())) - stop_words
+    title_terms = set(re.findall(r"[a-z0-9]+", str(title).lower()))
+    if not query_terms or not title_terms:
+        return 0.0
+    overlap = len(query_terms & title_terms) / len(query_terms)
+    if overlap >= 0.3:
+        return 0.5
+    if overlap >= 0.2:
+        return 0.25
+    return 0.0
+
+
 def _local_embedding(text: str) -> list[float]:
     """Compatibility helper backed by the shared embedding module."""
     return generate_embeddings([text])[0]
@@ -77,6 +92,23 @@ class InMemoryVectorStore:
                 }
         return len(chunks)
 
+    def sync_space_documents(self, chunks: list[dict[str, Any]], space_key: str) -> int:
+        """Replace one space's local snapshot after a complete source fetch."""
+        chunks = [chunk for chunk in chunks if isinstance(chunk, dict) and isinstance(chunk.get("content"), str) and chunk["content"].strip()]
+        _validate_chunks(chunks)
+        vectors = _embed([chunk["content"] for chunk in chunks])
+        replacements = {}
+        for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
+            chunk_id = str(chunk.get("id") or hashlib.sha256(f"{chunk['content']}:{index}".encode("utf-8")).hexdigest())
+            replacements[chunk_id] = {"content": chunk["content"], "metadata": dict(chunk.get("metadata", {})), "embedding": vector}
+        with self._lock:
+            self._documents = {
+                chunk_id: document for chunk_id, document in self._documents.items()
+                if document["metadata"].get("space_key") != space_key
+            }
+            self._documents.update(replacements)
+        return len(replacements)
+
     def search(
         self, query_text: str, top_k: int = 7, allowed_spaces: list[str] | None = None
     ) -> list[dict[str, Any]]:
@@ -100,6 +132,7 @@ class InMemoryVectorStore:
             if allowed_spaces is not None and document["metadata"].get("space_key") not in allowed_spaces:
                 continue
             score = sum(a * b for a, b in zip(query_vector, document["embedding"]))
+            score += _title_match_boost(query_text, document["metadata"].get("title", ""))
             results.append({"content": document["content"], "metadata": document["metadata"], "score": score})
         results.sort(key=lambda result: result["score"], reverse=True)
         return results[:top_k]
@@ -170,6 +203,33 @@ class PostgresVectorStore:
             return _switch_to_fallback().add_documents(chunks)
         return len(rows)
 
+    def sync_space_documents(self, chunks: list[dict[str, Any]], space_key: str) -> int:
+        """Atomically replace one space's rows with a complete fetched snapshot."""
+        chunks = [chunk for chunk in chunks if isinstance(chunk, dict) and isinstance(chunk.get("content"), str) and chunk["content"].strip()]
+        _validate_chunks(chunks)
+        vectors = _embed([chunk["content"] for chunk in chunks])
+        from psycopg2.extras import Json
+
+        rows = []
+        for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
+            chunk_id = str(chunk.get("id") or hashlib.sha256(f"{chunk['content']}:{index}".encode("utf-8")).hexdigest())
+            vector_literal = "[" + ",".join(str(value) for value in vector) + "]"
+            rows.append((chunk_id, chunk["content"], Json(chunk.get("metadata", {})), vector_literal))
+        try:
+            with self._lock, self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("DELETE FROM public.document_chunks WHERE metadata->>'space_key' = %s", (space_key,))
+                    if rows:
+                        cursor.executemany(
+                            """INSERT INTO public.document_chunks (id, content, metadata, embedding)
+                               VALUES (%s, %s, %s, %s::vector)""",
+                            rows,
+                        )
+        except Exception:
+            logger.exception("PostgreSQL space sync failed; prior snapshot retained")
+            raise
+        return len(rows)
+
     def search(
         self, query_text: str, top_k: int = 7, allowed_spaces: list[str] | None = None
     ) -> list[dict[str, Any]]:
@@ -227,11 +287,19 @@ class PostgresVectorStore:
                                FROM public.document_chunks
                                WHERE metadata->>'space_key' = ANY(%s::text[])
                                ORDER BY
-                                 (CASE WHEN to_tsvector('english', content) @@ plainto_tsquery('english', %s)
-                                       THEN 1.0 ELSE 0.0 END) DESC,
+                                 (CASE WHEN to_tsvector('english', coalesce(metadata->>'title', ''))
+                                            @@ plainto_tsquery('english', %s)
+                                       THEN 0.5 ELSE 0.0 END
+                                  + 2.0 * ts_rank_cd(
+                                     to_tsvector('english', coalesce(metadata->>'title', '')),
+                                     plainto_tsquery('english', %s)
+                                  ) + 0.25 * ts_rank_cd(
+                                     to_tsvector('english', content),
+                                     plainto_tsquery('english', %s)
+                                  )) DESC,
                                  embedding <=> %s::vector
                                LIMIT %s""",
-                            (vector_literal, spaces, query_text, vector_literal, int(top_k)),
+                            (vector_literal, spaces, query_text, query_text, query_text, vector_literal, int(top_k)),
                         )
                         rows = cursor.fetchall()
                         logger.info("Inline hybrid SQL returned %d rows", len(rows))

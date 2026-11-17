@@ -134,6 +134,22 @@ def fetch_confluence_pages() -> list[dict[str, Any]]:
         return []
 
 
+def _fetch_confluence_snapshot() -> tuple[list[dict[str, Any]], bool]:
+    """Return pages and whether pagination completed successfully."""
+    credentials = _credentials()
+    if not credentials:
+        return [], False
+    base_url, username, token = credentials
+    try:
+        pages, status_code = _fetch_pages(
+            requests.Session(), base_url, HTTPBasicAuth(username, token)
+        )
+        return pages, status_code == 200
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        print(f"Error connecting to Confluence API: {exc}")
+        return [], False
+
+
 def test_confluence_connection() -> dict[str, Any]:
     """Print a diagnostic status and page count for the configured live space."""
     credentials = _credentials()
@@ -174,10 +190,12 @@ def ingest_local_docs(
     store: PostgresVectorStore | InMemoryVectorStore | None = None,
 ) -> int:
     """Fetch only live COS40005 pages, then add non-empty chunks to the store."""
-    chunks = chunk_documents(fetch_confluence_pages())
-    if not chunks:
+    pages, complete = _fetch_confluence_snapshot()
+    if not complete:
+        print("Confluence sync incomplete; preserving the existing indexed snapshot.")
         return 0
-    return (store or get_vector_store()).add_documents(chunks)
+    chunks = chunk_documents(pages)
+    return (store or get_vector_store()).sync_space_documents(chunks, SPACE_KEY)
 
 
 if __name__ == "__main__":

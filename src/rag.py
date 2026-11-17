@@ -95,8 +95,9 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
                     temperature=0.1,
                     system_instruction=(
                         "Answer only using facts explicitly stated in the provided Confluence context. "
-                        "If the answer is absent, state that clearly without guessing. Write a clean, "
-                        "conversational summary and use bullets where useful. Do not output citations."
+                        "If the answer is absent, state that clearly without guessing. Keep answers concise: "
+                        "answer the question directly, avoid repeating facts, use short bullets for names or lists, "
+                        "and give a brief summary before details for broad questions. Do not output citations."
                     ),
                 ),
             )
@@ -179,6 +180,8 @@ def answer_question(query: str, user_email: str) -> dict[str, Any]:
             url = metadata.get("url", "")
             space = metadata.get("space_key", "COS40005")
             sources.append({"title": title, "url": url, "space": space})
+            if len(sources) >= 3:
+                break
     logger.info("Answer generated query=%r retrieved=%d citations=%s", clean_query, len(matches), [s["url"] for s in sources])
     return {"answer": answer, "sources": sources}
 

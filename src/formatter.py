@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import re
 
-_MAX_SECTION_CHARS = 3000
+_MAX_SECTION_CHARS = 2500
+_MAX_SOURCES = 3
 
 
 def _source_badge(source: str) -> str:
@@ -34,7 +35,7 @@ def build_slack_blocks(answer: str, sources: list[dict]) -> list[dict]:
     ]
     if sources:
         blocks.append({"type": "header", "text": {"type": "plain_text", "text": "Sources"}})
-        for source in sources[:20]:
+        for source in sources[:_MAX_SOURCES]:
             title = str(source.get("title", "Untitled")).replace("<", "&lt;").replace(">", "&gt;")
             url = str(source.get("url", ""))
             space = str(source.get("space", "COS40005"))
