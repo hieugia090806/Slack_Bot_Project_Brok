@@ -1,11 +1,10 @@
 # SUMMARY: Manages vector storage with a live-document-only in-memory fallback.
 """MemTrust-inspired Layer 3 storage for chunks and provenance metadata.
 
-PostgreSQL is used when ``DATABASE_URL`` is set. The database must have the
-pgvector extension available to its user. For local use without a database URL,
-an in-memory store and deterministic feature-hash embeddings keep the RAG path
-usable without additional services. pgvector uses dense cosine search. There
-are no sealed segments or OPA integration; access checks are in ``policy.py``.
+PostgreSQL is used when ``DATABASE_URL`` is set. Hybrid retrieval is delegated
+to ``public.match_documents_hybrid`` with authorized space keys. For local use
+without a database URL, an in-memory store and deterministic feature-hash
+embeddings keep the RAG path usable without additional services.
 """
 
 from __future__ import annotations
@@ -78,6 +77,8 @@ class InMemoryVectorStore:
     ) -> list[dict[str, Any]]:
         """Return the most cosine-similar chunks with a higher-is-better score."""
         if top_k <= 0 or not query_text.strip():
+            return []
+        if allowed_spaces is not None and not allowed_spaces:
             return []
         normalized = re.sub(r"[^a-z\s]", "", query_text.lower()).strip()
         if re.fullmatch(r"(?:hello|hi|hey|good morning|good afternoon|good evening)(?: brok)?", normalized):
@@ -170,6 +171,9 @@ class PostgresVectorStore:
         """Search through the hybrid RPC, passing authorization into SQL."""
         if top_k <= 0 or not query_text.strip():
             return []
+        spaces = list(allowed_spaces or [])
+        if not spaces:
+            return []
         normalized = re.sub(r"[^a-z\s]", "", query_text.lower()).strip()
         if re.fullmatch(r"(?:hello|hi|hey|good morning|good afternoon|good evening)(?: brok)?", normalized):
             return [{
@@ -178,7 +182,6 @@ class PostgresVectorStore:
                 "score": 1.0,
             }]
         vector = _embed([query_text])[0]
-        spaces = list(allowed_spaces or [])
         try:
             with self._connect() as connection:
                 with connection.cursor() as cursor:
