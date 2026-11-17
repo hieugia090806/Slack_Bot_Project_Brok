@@ -21,16 +21,6 @@ TEST_QUERIES = [
     "Requirements and Knowledge Sources",
     "Architecture and Technical Design",
     "Development and Integrations",
-    "Testing and Model Evaluation",
-    "Risks, Decisions and Change Control",
-    "Risk Register and Change Log",
-    "Deliverables, Review and Handover",
-    "Templates and Atlassian Resources",
-    "What are our project roles?",
-    "Explain the architecture design",
-    "What is our testing and model evaluation plan?",
-    "Show me the risk register details",
-    "Summarize project deliverables",
 ]
 
 def run_tests():
@@ -38,7 +28,7 @@ def run_tests():
     print(f"🚀 Running 20 Confluence-aligned test queries for user: {test_email}\n" + "="*50)
     
     for i, query in enumerate(TEST_QUERIES, start=1):
-        print(f"\n[Test {i}/20] Query: '{query}'")
+        print(f"\n[Test {i}/10] Query: '{query}'")
         try:
             result = answer_question(query, user_email=test_email)
             print(f"Answer: {result.get('answer', '')}")

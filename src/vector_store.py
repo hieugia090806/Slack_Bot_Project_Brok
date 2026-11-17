@@ -53,6 +53,11 @@ class InMemoryVectorStore:
         self._documents: dict[str, dict[str, Any]] = {}
         self._lock = RLock()
 
+    @property
+    def document_count(self) -> int:
+        with self._lock:
+            return len(self._documents)
+
     def add_documents(self, chunks: list[dict[str, Any]]) -> int:
         """Insert or replace chunks by id and return the number accepted."""
         chunks = [chunk for chunk in chunks if isinstance(chunk, dict) and isinstance(chunk.get("content"), str) and chunk["content"].strip()]
@@ -168,12 +173,13 @@ class PostgresVectorStore:
     def search(
         self, query_text: str, top_k: int = 7, allowed_spaces: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        """Search through the hybrid RPC, passing authorization into SQL."""
+        """Search through the hybrid RPC, with inline SQL fallback if absent."""
         if top_k <= 0 or not query_text.strip():
             return []
         spaces = list(allowed_spaces or [])
         if not spaces:
             return []
+        logger.info("Vector search received query=%r top_k=%d allowed_spaces=%s", query_text, top_k, spaces)
         normalized = re.sub(r"[^a-z\s]", "", query_text.lower()).strip()
         if re.fullmatch(r"(?:hello|hi|hey|good morning|good afternoon|good evening)(?: brok)?", normalized):
             return [{
@@ -182,6 +188,14 @@ class PostgresVectorStore:
                 "score": 1.0,
             }]
         vector = _embed([query_text])[0]
+        logger.info("Query embedding generated dimension=%d", len(vector))
+        if len(vector) != VECTOR_DIMENSIONS:
+            logger.error(
+                "Query embedding dimension mismatch: expected=%d actual=%d",
+                VECTOR_DIMENSIONS, len(vector),
+            )
+            return self._local_search(query_text, top_k, spaces)
+        vector_literal = "[" + ",".join(str(value) for value in vector) + "]"
         try:
             with self._connect() as connection:
                 with connection.cursor() as cursor:
@@ -190,16 +204,53 @@ class PostgresVectorStore:
                            FROM public.match_documents_hybrid(
                                %s::vector, %s::text, %s::integer, %s::text[]
                            )""",
-                        ("[" + ",".join(str(value) for value in vector) + "]", query_text, int(top_k), spaces),
+                        (vector_literal, query_text, int(top_k), spaces),
                     )
                     rows = cursor.fetchall()
+                    logger.info("Hybrid RPC returned %d rows", len(rows))
         except Exception as exc:
-            logger.warning("PostgreSQL search failed; using process-local indexed documents: %s", exc)
-            return _switch_to_fallback().search(query_text, top_k, spaces)
+            sqlstate = getattr(exc, "pgcode", None)
+            missing_rpc = (
+                sqlstate == "42883"
+                or ("match_documents_hybrid" in str(exc) and "does not exist" in str(exc))
+            )
+            if not missing_rpc:
+                logger.warning("PostgreSQL hybrid RPC search failed: %s", exc)
+                return self._local_search(query_text, top_k, spaces)
+            logger.warning("Hybrid RPC is missing; using inline hybrid SQL against public.document_chunks: %s", exc)
+            try:
+                with self._connect() as connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            """SELECT content, metadata,
+                                      (1 - (embedding <=> %s::vector)) AS score
+                               FROM public.document_chunks
+                               WHERE metadata->>'space_key' = ANY(%s::text[])
+                               ORDER BY
+                                 (CASE WHEN to_tsvector('english', content) @@ plainto_tsquery('english', %s)
+                                       THEN 1.0 ELSE 0.0 END) DESC,
+                                 embedding <=> %s::vector
+                               LIMIT %s""",
+                            (vector_literal, spaces, query_text, vector_literal, int(top_k)),
+                        )
+                        rows = cursor.fetchall()
+                        logger.info("Inline hybrid SQL returned %d rows", len(rows))
+            except Exception as fallback_exc:
+                logger.warning("PostgreSQL inline hybrid SQL failed; using process-local indexed documents: %s", fallback_exc)
+                return self._local_search(query_text, top_k, spaces)
         return [
             {"content": content, "metadata": metadata if isinstance(metadata, dict) else json.loads(metadata), "score": float(score)}
             for content, metadata, score in rows
         ]
+
+    @staticmethod
+    def _local_search(query_text: str, top_k: int, spaces: list[str]) -> list[dict[str, Any]]:
+        """Search the populated process-local fallback without replacing it."""
+        fallback = _switch_to_fallback()
+        logger.warning("Using process-local fallback; indexed document count=%d", fallback.document_count)
+        results = fallback.search(query_text, top_k, spaces)
+        logger.info("Process-local vector search returned %d rows", len(results))
+        return results
 
 
 _default_store: PostgresVectorStore | InMemoryVectorStore | None = None

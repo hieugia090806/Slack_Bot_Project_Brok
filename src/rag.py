@@ -22,9 +22,10 @@ GEMINI_CHAT_MODELS = [
 def retrieve(query: str, top_k: int = 7, user_email: str = "") -> list[dict[str, Any]]:
     """Sanitize a query, search the store, then apply the policy decision seam."""
     clean_query = sanitize_and_mask(query)
+    logger.info("Retrieval received query=%r user=%s top_k=%d", clean_query, user_email, top_k)
     allowed_spaces = get_allowed_spaces(user_email)
     if not allowed_spaces:
-        logger.info("No authorized Confluence spaces for user=%s", user_email)
+        logger.warning("Retrieval denied: no authorized Confluence spaces for user=%s", user_email)
         return []
     matches = get_vector_store().search(
         clean_query, top_k=top_k, allowed_spaces=allowed_spaces
@@ -33,6 +34,12 @@ def retrieve(query: str, top_k: int = 7, user_email: str = "") -> list[dict[str,
     allowed = []
     for match in matches:
         permitted = check_access(user_email, match.get("metadata", {}))
+        if not permitted:
+            logger.info(
+                "Retrieval discarded page=%s reason=classification_denied security_level=%s",
+                match.get("metadata", {}).get("page_id"),
+                match.get("metadata", {}).get("security_level", "public"),
+            )
         logger.info("RBAC user=%s role=%s clearance=%d chunk=%s decision=%s", user_email, get_user_role(user_email), ROLE_CLEARANCE.get(get_user_role(user_email), 1), match.get("metadata", {}).get("page_id"), "allowed" if permitted else "filtered")
         if permitted:
             allowed.append(match)
@@ -145,6 +152,7 @@ def answer_question(query: str, user_email: str) -> dict[str, Any]:
         return {"answer": "Please include a question so I can search the knowledge base.", "sources": []}
 
     matches = retrieve(clean_query, top_k=7, user_email=user_email)
+    logger.info("Final authorized retrieval context count=%d", len(matches))
     if not matches:
         return {"answer": "I could not find any indexed documents to answer that question.", "sources": []}
 
