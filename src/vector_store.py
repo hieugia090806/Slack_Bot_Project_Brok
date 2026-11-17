@@ -73,7 +73,9 @@ class InMemoryVectorStore:
                 }
         return len(chunks)
 
-    def search(self, query_text: str, top_k: int = 3) -> list[dict[str, Any]]:
+    def search(
+        self, query_text: str, top_k: int = 7, allowed_spaces: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Return the most cosine-similar chunks with a higher-is-better score."""
         if top_k <= 0 or not query_text.strip():
             return []
@@ -89,6 +91,8 @@ class InMemoryVectorStore:
             documents = list(self._documents.values())
         results = []
         for document in documents:
+            if allowed_spaces is not None and document["metadata"].get("space_key") not in allowed_spaces:
+                continue
             score = sum(a * b for a, b in zip(query_vector, document["embedding"]))
             results.append({"content": document["content"], "metadata": document["metadata"], "score": score})
         results.sort(key=lambda result: result["score"], reverse=True)
@@ -160,8 +164,10 @@ class PostgresVectorStore:
             return _switch_to_fallback().add_documents(chunks)
         return len(rows)
 
-    def search(self, query_text: str, top_k: int = 3) -> list[dict[str, Any]]:
-        """Search by pgvector cosine distance and return normalized result records."""
+    def search(
+        self, query_text: str, top_k: int = 7, allowed_spaces: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Search through the hybrid RPC, passing authorization into SQL."""
         if top_k <= 0 or not query_text.strip():
             return []
         normalized = re.sub(r"[^a-z\s]", "", query_text.lower()).strip()
@@ -171,21 +177,22 @@ class PostgresVectorStore:
                 "metadata": {"title": "Brok Assistant", "source": "Brok", "url": ""},
                 "score": 1.0,
             }]
-        vector = "[" + ",".join(str(value) for value in _embed([query_text])[0]) + "]"
+        vector = _embed([query_text])[0]
+        spaces = list(allowed_spaces or [])
         try:
             with self._connect() as connection:
                 with connection.cursor() as cursor:
                     cursor.execute(
-                        """SELECT content, metadata, 1 - (embedding <=> %s::vector) AS score
-                           FROM document_chunks
-                           ORDER BY embedding <=> %s::vector
-                           LIMIT %s""",
-                        (vector, vector, int(top_k)),
+                        """SELECT content, metadata, score
+                           FROM public.match_documents_hybrid(
+                               %s::vector, %s::text, %s::integer, %s::text[]
+                           )""",
+                        ("[" + ",".join(str(value) for value in vector) + "]", query_text, int(top_k), spaces),
                     )
                     rows = cursor.fetchall()
         except Exception as exc:
             logger.warning("PostgreSQL search failed; using process-local indexed documents: %s", exc)
-            return _switch_to_fallback().search(query_text, top_k)
+            return _switch_to_fallback().search(query_text, top_k, spaces)
         return [
             {"content": content, "metadata": metadata if isinstance(metadata, dict) else json.loads(metadata), "score": float(score)}
             for content, metadata, score in rows

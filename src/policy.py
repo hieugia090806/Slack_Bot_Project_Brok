@@ -9,6 +9,8 @@ local policy implementation, not an OPA service integration.
 from __future__ import annotations
 
 import logging
+import json
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,41 @@ MOCK_USER_ROLES: dict[str, str] = {
     "minhhoang@swin.edu": "employee",
     "nhat@swin.edu": "student",
 }
+
+# Optional explicit mapping, for example:
+# USER_SPACE_ACCESS='{"alice@example.com":["ENG","COS40005"]}'
+DEFAULT_SPACE_KEYS = ("COS40005",)
+
+
+def get_allowed_spaces(user_email: str) -> list[str]:
+    """Resolve authorized Confluence space keys for the database search filter.
+
+    ``USER_SPACE_ACCESS`` can hold a JSON object mapping normalized email
+    addresses to arrays of space keys. If it is unset, users who pass the
+    existing role policy may search the currently configured Confluence
+    space. Unknown users receive no spaces.
+    """
+    if not user_email:
+        return []
+    normalized_email = user_email.strip().lower()
+    raw_mapping = os.getenv("USER_SPACE_ACCESS", "").strip()
+    if raw_mapping:
+        try:
+            mapping = json.loads(raw_mapping)
+        except json.JSONDecodeError:
+            logger.error("USER_SPACE_ACCESS must be a JSON object; denying space access")
+            return []
+        if not isinstance(mapping, dict):
+            logger.error("USER_SPACE_ACCESS must be a JSON object; denying space access")
+            return []
+        spaces = mapping.get(normalized_email, [])
+        if not isinstance(spaces, list):
+            return []
+        return sorted({str(space).strip() for space in spaces if str(space).strip()})
+
+    if get_user_role(normalized_email) not in ROLE_CLEARANCE:
+        return []
+    return list(DEFAULT_SPACE_KEYS)
 
 
 def get_user_role(user_email: str) -> str:

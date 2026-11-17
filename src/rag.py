@@ -5,7 +5,7 @@ import os
 import time
 from typing import Any
 
-from src.policy import check_access, get_user_role, ROLE_CLEARANCE
+from src.policy import check_access, get_user_role, get_allowed_spaces, ROLE_CLEARANCE
 from src.sanitization import sanitize_and_mask
 from src.vector_store import get_vector_store
 
@@ -19,10 +19,16 @@ GEMINI_CHAT_MODELS = [
 ]
 
 
-def retrieve(query: str, top_k: int = 3, user_email: str = "") -> list[dict[str, Any]]:
+def retrieve(query: str, top_k: int = 7, user_email: str = "") -> list[dict[str, Any]]:
     """Sanitize a query, search the store, then apply the policy decision seam."""
     clean_query = sanitize_and_mask(query)
-    matches = get_vector_store().search(clean_query, top_k=top_k)
+    allowed_spaces = get_allowed_spaces(user_email)
+    if not allowed_spaces:
+        logger.info("No authorized Confluence spaces for user=%s", user_email)
+        return []
+    matches = get_vector_store().search(
+        clean_query, top_k=top_k, allowed_spaces=allowed_spaces
+    )
     logger.info("Retrieval query=%r top_n=%d candidates=%d", clean_query, top_k, len(matches))
     allowed = []
     for match in matches:
@@ -138,7 +144,7 @@ def answer_question(query: str, user_email: str) -> dict[str, Any]:
     if not clean_query.strip():
         return {"answer": "Please include a question so I can search the knowledge base.", "sources": []}
 
-    matches = retrieve(clean_query, top_k=3, user_email=user_email)
+    matches = retrieve(clean_query, top_k=7, user_email=user_email)
     if not matches:
         return {"answer": "I could not find any indexed documents to answer that question.", "sources": []}
 
