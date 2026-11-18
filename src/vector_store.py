@@ -155,6 +155,15 @@ class PostgresVectorStore:
         connection = self._psycopg2.connect(self.database_url)
         return connection
 
+    @property
+    def document_count(self) -> int:
+        """Return the number of chunks currently persisted in the table."""
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM public.document_chunks")
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+
     def _initialize(self) -> None:
         """Ensure pgvector and the expected chunk table exist."""
         with self._connect() as connection:

@@ -17,28 +17,58 @@ from slack_bolt.adapter.fastapi import SlackRequestHandler
 from src.formatter import build_slack_blocks
 from src.rag import answer_question
 from src.ingestion import ingest_local_docs
+from src.vector_store import get_vector_store
 
 logger = logging.getLogger(__name__)
 answer_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="brok-answer")
 SYNC_INTERVAL = timedelta(hours=3)
 _sync_lock = Lock()
+_ingestion_lock = Lock()
 _last_sync_at: datetime | None = None
 _sync_in_progress = False
 
 
-def _run_sync() -> int:
+def run_ingestion_sync() -> int:
     """Run ingestion and record completion time for lazy-sync gating."""
     global _last_sync_at, _sync_in_progress
-    try:
-        count = ingest_local_docs()
-    except Exception:
-        with _sync_lock:
-            _sync_in_progress = False
-        raise
+    with _ingestion_lock:
+        try:
+            count = ingest_local_docs()
+        except Exception:
+            with _sync_lock:
+                _sync_in_progress = False
+            raise
     with _sync_lock:
         _last_sync_at = datetime.now(timezone.utc)
         _sync_in_progress = False
     return count
+
+
+def schedule_startup_sync():
+    """Schedule the startup refresh on the shared ingestion worker pool."""
+    global _sync_in_progress
+
+    def startup_sync() -> int:
+        try:
+            count = get_vector_store().document_count
+            if count == 0:
+                logger.warning("Vector store is empty; starting self-healing Confluence ingestion")
+            else:
+                logger.info("Vector store contains %d chunks; refreshing from Confluence", count)
+        except Exception:
+            logger.exception("Could not inspect vector store count before startup sync")
+        # Always refresh at startup, which also repairs an empty store and prunes stale pages.
+        return run_ingestion_sync()
+
+    with _sync_lock:
+        _sync_in_progress = True
+    try:
+        return answer_pool.submit(startup_sync)
+    except RuntimeError:
+        with _sync_lock:
+            _sync_in_progress = False
+        logger.exception("Could not schedule startup Confluence sync")
+        return None
 
 
 def maybe_schedule_lazy_sync() -> None:
@@ -52,7 +82,7 @@ def maybe_schedule_lazy_sync() -> None:
             return
         _sync_in_progress = True
     try:
-        answer_pool.submit(_run_sync)
+        answer_pool.submit(run_ingestion_sync)
         logger.info("Scheduled time-gated Confluence sync")
     except RuntimeError:
         with _sync_lock:
@@ -62,7 +92,7 @@ def maybe_schedule_lazy_sync() -> None:
 
 def _reply_sync(client, channel: str, thread_ts: str) -> None:
     try:
-        count = _run_sync()
+        count = run_ingestion_sync()
         message = f"Confluence sync complete. Indexed {count} chunks."
     except Exception:
         logger.exception("Manual Confluence sync failed")

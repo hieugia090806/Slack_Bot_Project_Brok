@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from typing import Any
 from urllib.parse import urljoin
 
@@ -32,6 +33,12 @@ except ModuleNotFoundError:
 
 SPACE_KEY = "COS40005"
 TIMEOUT_SECONDS = 20
+_HISTORICAL_MARKER = re.compile(r"\b(?:archived|superseded|legacy)\b", re.IGNORECASE)
+
+
+def _is_historical_page(title: str, body: str) -> bool:
+    """Identify archived, superseded, or explicitly legacy page content."""
+    return bool(_HISTORICAL_MARKER.search(f"{title}\n{body}"))
 
 
 def _credentials() -> tuple[str, str, str] | None:
@@ -97,12 +104,16 @@ def _fetch_pages(session: requests.Session, base_url: str, auth: HTTPBasicAuth) 
             if not page_id:
                 continue
             body = item.get("body", {}).get("storage", {}).get("value", "")
+            title = item.get("title") or "Untitled"
+            if _is_historical_page(title, body):
+                print(f"Skipping archived/superseded Confluence page {page_id}: {title}")
+                continue
             text = sanitize_and_mask(body)
             pages.append({
                 "text": text,
                 "metadata": {
                     "page_id": str(page_id),
-                    "title": item.get("title") or "Untitled",
+                    "title": title,
                     "url": f"{base_url}/spaces/{SPACE_KEY}/pages/{page_id}",
                     "source": "confluence",
                     "space_key": SPACE_KEY,
@@ -179,6 +190,8 @@ def chunk_documents(
     chunks: list[dict[str, Any]] = []
     for page in pages:
         metadata = dict(page.get("metadata", {}))
+        if _is_historical_page(str(metadata.get("title", "")), str(page.get("text", ""))):
+            continue
         page_id = str(metadata.get("page_id") or "document")
         for index, content in enumerate(split_text(page.get("text", ""), chunk_size, chunk_overlap)):
             chunk_id = hashlib.sha256(f"{page_id}:{index}".encode("utf-8")).hexdigest()

@@ -1,28 +1,15 @@
 """FastAPI host for AIRA-style Slack interaction and health endpoints."""
 
-import asyncio
-import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 
-from src.ingestion import ingest_local_docs
-from src.slack_app import maybe_schedule_lazy_sync, slack_handler
-
-logger = logging.getLogger(__name__)
+from src.slack_app import maybe_schedule_lazy_sync, schedule_startup_sync, slack_handler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async def startup_sync() -> None:
-        logger.info("Startup Confluence sync started")
-        try:
-            count = await asyncio.to_thread(ingest_local_docs)
-            logger.info("Startup Confluence sync completed; indexed %d chunks", count)
-        except Exception:
-            logger.exception("Startup Confluence sync failed")
-
-    app.state.ingestion_task = asyncio.create_task(startup_sync(), name="startup-confluence-sync")
+    app.state.ingestion_future = schedule_startup_sync()
     yield
 
 
