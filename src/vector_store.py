@@ -207,17 +207,36 @@ class PostgresVectorStore:
         """Atomically replace one space's rows with a complete fetched snapshot."""
         chunks = [chunk for chunk in chunks if isinstance(chunk, dict) and isinstance(chunk.get("content"), str) and chunk["content"].strip()]
         _validate_chunks(chunks)
-        vectors = _embed([chunk["content"] for chunk in chunks])
         from psycopg2.extras import Json
 
-        rows = []
-        for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            chunk_id = str(chunk.get("id") or hashlib.sha256(f"{chunk['content']}:{index}".encode("utf-8")).hexdigest())
-            vector_literal = "[" + ",".join(str(value) for value in vector) + "]"
-            rows.append((chunk_id, chunk["content"], Json(chunk.get("metadata", {})), vector_literal))
         try:
             with self._lock, self._connect() as connection:
                 with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT id, content, embedding::text FROM public.document_chunks WHERE metadata->>'space_key' = %s",
+                        (space_key,),
+                    )
+                    existing = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}
+
+                    identified_chunks = []
+                    for index, chunk in enumerate(chunks):
+                        chunk_id = str(chunk.get("id") or hashlib.sha256(f"{chunk['content']}:{index}".encode("utf-8")).hexdigest())
+                        identified_chunks.append((chunk_id, chunk))
+
+                    changed = [
+                        chunk for chunk_id, chunk in identified_chunks
+                        if chunk_id not in existing or existing[chunk_id][0] != chunk["content"]
+                    ]
+                    changed_vectors = iter(_embed([chunk["content"] for chunk in changed]))
+                    rows = []
+                    for chunk_id, chunk in identified_chunks:
+                        if chunk_id in existing and existing[chunk_id][0] == chunk["content"]:
+                            vector_literal = existing[chunk_id][1]
+                        else:
+                            vector = next(changed_vectors)
+                            vector_literal = "[" + ",".join(str(value) for value in vector) + "]"
+                        rows.append((chunk_id, chunk["content"], Json(chunk.get("metadata", {})), vector_literal))
+
                     cursor.execute("DELETE FROM public.document_chunks WHERE metadata->>'space_key' = %s", (space_key,))
                     if rows:
                         cursor.executemany(
