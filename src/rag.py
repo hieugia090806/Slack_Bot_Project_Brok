@@ -149,12 +149,15 @@ def check_gemini_connectivity() -> dict[str, str]:
     return results
 
 
-def answer_question(query: str, user_email: str) -> dict[str, Any]:
+def _answer_question(
+    query: str, user_email: str, metrics: dict[str, int]
+) -> dict[str, Any]:
     clean_query = sanitize_and_mask(query)
     if not clean_query.strip():
         return {"answer": "Please include a question so I can search the knowledge base.", "sources": []}
 
     matches = retrieve(clean_query, top_k=7, user_email=user_email)
+    metrics["chunks_retrieved"] = len(matches)
     logger.info("Final authorized retrieval context count=%d", len(matches))
     if not matches:
         return {"answer": "I could not find any indexed documents to answer that question.", "sources": []}
@@ -186,6 +189,25 @@ def answer_question(query: str, user_email: str) -> dict[str, Any]:
                 break
     logger.info("Answer generated query=%r retrieved=%d citations=%s", clean_query, len(matches), [s["url"] for s in sources])
     return {"answer": answer, "sources": sources}
+
+
+def answer_question(query: str, user_email: str) -> dict[str, Any]:
+    """Answer a user query and log end-to-end latency and authorized chunk count."""
+    started_at = time.time()
+    metrics = {"chunks_retrieved": 0}
+    status = "Success"
+    try:
+        return _answer_question(query, user_email, metrics)
+    except Exception:
+        status = "Error"
+        raise
+    finally:
+        elapsed = time.time() - started_at
+        print(
+            f"⏱️ [Performance] Query processed in {elapsed:.2f}s | "
+            f"Chunks retrieved: {metrics['chunks_retrieved']} | Status: {status}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__" and "--check" in os.sys.argv:

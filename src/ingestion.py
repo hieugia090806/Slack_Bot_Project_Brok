@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin
 
@@ -74,17 +76,20 @@ def _get_space_id(session: requests.Session, base_url: str, auth: HTTPBasicAuth)
     return (str(spaces[0]["id"]) if spaces and spaces[0].get("id") else None), response.status_code
 
 
-def _fetch_pages(session: requests.Session, base_url: str, auth: HTTPBasicAuth) -> tuple[list[dict[str, Any]], int | None]:
+def _fetch_pages(
+    session: requests.Session, base_url: str, auth: HTTPBasicAuth
+) -> tuple[list[dict[str, Any]], int | None, int]:
     space_id, space_status = _get_space_id(session, base_url, auth)
     if not space_id:
         if space_status == 200:
             print(f"WARNING: Confluence space {SPACE_KEY} was not found or is not visible to this account.")
-        return [], space_status
+        return [], space_status, 0
 
     url = f"{base_url}/api/v2/pages"
     params: dict[str, Any] | None = {"space-id": space_id, "body-format": "storage", "limit": 100}
     pages: list[dict[str, Any]] = []
     status_code: int | None = None
+    filtered_count = 0
     while url:
         response = session.get(
             url, params=params, auth=auth, headers={"Accept": "application/json"},
@@ -96,7 +101,7 @@ def _fetch_pages(session: requests.Session, base_url: str, auth: HTTPBasicAuth) 
                 print(f"WARNING: Confluence returned {status_code}; check API credentials and space permissions.")
             else:
                 print(f"Confluence page fetch failed: HTTP {status_code} - {response.text}")
-            return pages, status_code
+            return pages, status_code, filtered_count
 
         data = response.json()
         for item in data.get("results", []):
@@ -106,7 +111,7 @@ def _fetch_pages(session: requests.Session, base_url: str, auth: HTTPBasicAuth) 
             body = item.get("body", {}).get("storage", {}).get("value", "")
             title = item.get("title") or "Untitled"
             if _is_historical_page(title, body):
-                print(f"Skipping archived/superseded Confluence page {page_id}: {title}")
+                filtered_count += 1
                 continue
             text = sanitize_and_mask(body)
             pages.append({
@@ -126,7 +131,7 @@ def _fetch_pages(session: requests.Session, base_url: str, auth: HTTPBasicAuth) 
             next_url = links.get("next", {}).get("url")
         url = urljoin(base_url + "/", next_url) if next_url else ""
         params = None  # Cursor is encoded in the next URL.
-    return pages, status_code
+    return pages, status_code, filtered_count
 
 
 def fetch_confluence_pages() -> list[dict[str, Any]]:
@@ -136,29 +141,29 @@ def fetch_confluence_pages() -> list[dict[str, Any]]:
         return []
     base_url, username, token = credentials
     try:
-        pages, _ = _fetch_pages(requests.Session(), base_url, HTTPBasicAuth(username, token))
+        pages, _, filtered_count = _fetch_pages(requests.Session(), base_url, HTTPBasicAuth(username, token))
         sanitized_count = sum(bool(page.get("text", "").strip()) for page in pages)
-        print(f"Confluence {SPACE_KEY}: fetched {len(pages)} pages; sanitized non-empty pages: {sanitized_count}.")
+        print(f"Confluence {SPACE_KEY}: fetched {len(pages)} active pages; filtered archived/superseded pages: {filtered_count}; sanitized non-empty pages: {sanitized_count}.")
         return pages
     except (requests.RequestException, ValueError, KeyError) as exc:
         print(f"Error connecting to Confluence API: {exc}")
         return []
 
 
-def _fetch_confluence_snapshot() -> tuple[list[dict[str, Any]], bool]:
+def _fetch_confluence_snapshot() -> tuple[list[dict[str, Any]], bool, int]:
     """Return pages and whether pagination completed successfully."""
     credentials = _credentials()
     if not credentials:
-        return [], False
+        return [], False, 0
     base_url, username, token = credentials
     try:
-        pages, status_code = _fetch_pages(
+        pages, status_code, filtered_count = _fetch_pages(
             requests.Session(), base_url, HTTPBasicAuth(username, token)
         )
-        return pages, status_code == 200
+        return pages, status_code == 200, filtered_count
     except (requests.RequestException, ValueError, KeyError) as exc:
         print(f"Error connecting to Confluence API: {exc}")
-        return [], False
+        return [], False, 0
 
 
 def test_confluence_connection() -> dict[str, Any]:
@@ -169,12 +174,12 @@ def test_confluence_connection() -> dict[str, Any]:
         return {"status_code": None, "page_count": 0, "ok": False}
     base_url, username, token = credentials
     try:
-        pages, status_code = _fetch_pages(requests.Session(), base_url, HTTPBasicAuth(username, token))
+        pages, status_code, filtered_count = _fetch_pages(requests.Session(), base_url, HTTPBasicAuth(username, token))
     except (requests.RequestException, ValueError, KeyError) as exc:
         print(f"Confluence diagnostic connection error: {exc}")
         return {"status_code": None, "page_count": 0, "ok": False}
     print(f"Confluence HTTP status: {status_code}")
-    print(f"Pages discovered in {SPACE_KEY}: {len(pages)}")
+    print(f"Active pages in {SPACE_KEY}: {len(pages)}; archived/superseded filtered: {filtered_count}")
     if status_code in (401, 403):
         print(f"WARNING: HTTP {status_code} Unauthorized/Forbidden. Check credentials and access to {SPACE_KEY}.")
     return {"status_code": status_code, "page_count": len(pages), "ok": status_code == 200}
@@ -201,13 +206,37 @@ def chunk_documents(
 
 def ingest_local_docs(
     store: PostgresVectorStore | InMemoryVectorStore | None = None,
+    trigger: str = "manual",
 ) -> int:
     """Fetch only live COS40005 pages, then add non-empty chunks to the store."""
-    pages, complete = _fetch_confluence_snapshot()
-    if not complete:
-        raise RuntimeError("Confluence sync incomplete; existing indexed snapshot was preserved.")
-    chunks = chunk_documents(pages)
-    return (store or get_vector_store()).sync_space_documents(chunks, SPACE_KEY)
+    started_at = time.time()
+    synced_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"🔄 [Sync] Started at {synced_at} | Trigger: {trigger} | Space: {SPACE_KEY}", flush=True)
+    try:
+        pages, complete, filtered_count = _fetch_confluence_snapshot()
+        if not complete:
+            raise RuntimeError("Confluence sync incomplete; existing indexed snapshot was preserved.")
+        chunks = chunk_documents(pages)
+        indexed_count = (store or get_vector_store()).sync_space_documents(chunks, SPACE_KEY)
+        duration = time.time() - started_at
+        print(
+            f"✅ [Sync] Status: Success | Freshness: {synced_at} | "
+            f"Trigger: {trigger} | "
+            f"Active pages: {len(pages)} | Active chunks indexed: {indexed_count} | "
+            f"Archived/superseded pages filtered: {filtered_count} | "
+            f"Stale page/chunk pruning: completed | Duration: {duration:.2f}s",
+            flush=True,
+        )
+        return indexed_count
+    except Exception as exc:
+        duration = time.time() - started_at
+        print(
+            f"❌ [Sync] Status: Failed | Freshness: {synced_at} | "
+            f"Trigger: {trigger} | "
+            f"Stale snapshot preserved: yes | Duration: {duration:.2f}s | Error: {exc}",
+            flush=True,
+        )
+        raise
 
 
 if __name__ == "__main__":

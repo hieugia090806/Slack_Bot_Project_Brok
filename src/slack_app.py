@@ -28,12 +28,12 @@ _last_sync_at: datetime | None = None
 _sync_in_progress = False
 
 
-def run_ingestion_sync() -> int:
+def run_ingestion_sync(trigger: str = "manual") -> int:
     """Run ingestion and record completion time for lazy-sync gating."""
     global _last_sync_at, _sync_in_progress
     with _ingestion_lock:
         try:
-            count = ingest_local_docs()
+            count = ingest_local_docs(trigger=trigger)
         except Exception:
             with _sync_lock:
                 _sync_in_progress = False
@@ -58,7 +58,7 @@ def schedule_startup_sync():
         except Exception:
             logger.exception("Could not inspect vector store count before startup sync")
         # Always refresh at startup, which also repairs an empty store and prunes stale pages.
-        return run_ingestion_sync()
+        return run_ingestion_sync(trigger="startup")
 
     with _sync_lock:
         _sync_in_progress = True
@@ -82,7 +82,7 @@ def maybe_schedule_lazy_sync() -> None:
             return
         _sync_in_progress = True
     try:
-        answer_pool.submit(run_ingestion_sync)
+        answer_pool.submit(run_ingestion_sync, "lazy")
         logger.info("Scheduled time-gated Confluence sync")
     except RuntimeError:
         with _sync_lock:
@@ -92,7 +92,7 @@ def maybe_schedule_lazy_sync() -> None:
 
 def _reply_sync(client, channel: str, thread_ts: str) -> None:
     try:
-        count = run_ingestion_sync()
+        count = run_ingestion_sync(trigger="manual")
         message = f"Confluence sync complete. Indexed {count} chunks."
     except Exception:
         logger.exception("Manual Confluence sync failed")
