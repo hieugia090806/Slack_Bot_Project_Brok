@@ -183,7 +183,7 @@ def _answer_question(
             seen.add(key)
             title = metadata.get("title", "Untitled")
             url = metadata.get("url", "")
-            space = metadata.get("space_key", "COS40005")
+            space = metadata.get("space_key", "Confluence")
             sources.append({"title": title, "url": url, "space": space})
             if len(sources) >= 3:
                 break

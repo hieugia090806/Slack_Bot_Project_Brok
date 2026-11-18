@@ -38,7 +38,7 @@ def build_slack_blocks(answer: str, sources: list[dict]) -> list[dict]:
         for source in sources[:_MAX_SOURCES]:
             title = str(source.get("title", "Untitled")).replace("<", "&lt;").replace(">", "&gt;")
             url = str(source.get("url", ""))
-            space = str(source.get("space", "COS40005"))
+            space = str(source.get("space", "Confluence"))
             citation = f"• *Source:* {title} (Space: `{space}`)"
             if url.startswith(("https://", "http://")):
                 citation = f"• *Source:* <{url}|{title}> (Space: `{space}`)"

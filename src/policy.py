@@ -12,6 +12,10 @@ import logging
 import json
 import os
 from typing import Any
+try:
+    from src.space_config import get_target_spaces
+except ModuleNotFoundError:
+    from space_config import get_target_spaces
 
 logger = logging.getLogger(__name__)
 
@@ -45,17 +49,14 @@ MOCK_USER_ROLES: dict[str, str] = {
 }
 
 # Optional explicit mapping, for example:
-# USER_SPACE_ACCESS='{"alice@example.com":["ENG","COS40005"]}'
-DEFAULT_SPACE_KEYS = ("COS40005",)
-
-
+# USER_SPACE_ACCESS='{"alice@example.com":["ENG","PRODUCT"]}'
 def get_allowed_spaces(user_email: str) -> list[str]:
     """Resolve authorized Confluence space keys for the database search filter.
 
     ``USER_SPACE_ACCESS`` can hold a JSON object mapping normalized email
     addresses to arrays of space keys. If it is unset, users who pass the
     existing role policy may search the currently configured Confluence
-    space. Unknown users receive no spaces.
+    configured spaces. Unknown users receive no spaces.
     """
     if not user_email:
         return []
@@ -77,7 +78,7 @@ def get_allowed_spaces(user_email: str) -> list[str]:
 
     if get_user_role(normalized_email) not in ROLE_CLEARANCE:
         return []
-    return list(DEFAULT_SPACE_KEYS)
+    return get_target_spaces()
 
 
 def get_user_role(user_email: str) -> str:
