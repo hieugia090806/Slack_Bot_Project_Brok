@@ -2,6 +2,8 @@
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from threading import Lock
 
 try:
     from dotenv import load_dotenv
@@ -14,9 +16,62 @@ from slack_bolt.adapter.fastapi import SlackRequestHandler
 
 from src.formatter import build_slack_blocks
 from src.rag import answer_question
+from src.ingestion import ingest_local_docs
 
 logger = logging.getLogger(__name__)
 answer_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="brok-answer")
+SYNC_INTERVAL = timedelta(hours=3)
+_sync_lock = Lock()
+_last_sync_at: datetime | None = None
+_sync_in_progress = False
+
+
+def _run_sync() -> int:
+    """Run ingestion and record completion time for lazy-sync gating."""
+    global _last_sync_at, _sync_in_progress
+    try:
+        count = ingest_local_docs()
+    except Exception:
+        with _sync_lock:
+            _sync_in_progress = False
+        raise
+    with _sync_lock:
+        _last_sync_at = datetime.now(timezone.utc)
+        _sync_in_progress = False
+    return count
+
+
+def maybe_schedule_lazy_sync() -> None:
+    """Schedule at most one automatic sync when the three-hour gate expires."""
+    global _sync_in_progress
+    now = datetime.now(timezone.utc)
+    with _sync_lock:
+        if _sync_in_progress or (
+            _last_sync_at is not None and now - _last_sync_at < SYNC_INTERVAL
+        ):
+            return
+        _sync_in_progress = True
+    try:
+        answer_pool.submit(_run_sync)
+        logger.info("Scheduled time-gated Confluence sync")
+    except RuntimeError:
+        with _sync_lock:
+            _sync_in_progress = False
+        logger.exception("Could not schedule time-gated Confluence sync")
+
+
+def _reply_sync(client, channel: str, thread_ts: str) -> None:
+    try:
+        count = _run_sync()
+        message = f"Confluence sync complete. Indexed {count} chunks."
+    except Exception:
+        logger.exception("Manual Confluence sync failed")
+        message = "Confluence sync failed. Please check the service logs and try again."
+    client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=message)
+
+
+def _is_sync_command(query: str) -> bool:
+    return bool(re.search(r"\bsync\b", query, flags=re.IGNORECASE))
 
 # Initialize Slack Bolt App safely
 slack_app = App(
@@ -60,6 +115,9 @@ def _submit_query(client, event: dict, query: str):
     thread_ts = event.get("thread_ts") or event["ts"]
     user_id = event.get("user")
     if not user_id or not query:
+        return
+    if _is_sync_command(query):
+        answer_pool.submit(_reply_sync, client, channel, thread_ts)
         return
     answer_pool.submit(_reply_to_query, client, channel, thread_ts, user_id, query)
 

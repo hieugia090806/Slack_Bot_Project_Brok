@@ -192,8 +192,7 @@ def ingest_local_docs(
     """Fetch only live COS40005 pages, then add non-empty chunks to the store."""
     pages, complete = _fetch_confluence_snapshot()
     if not complete:
-        print("Confluence sync incomplete; preserving the existing indexed snapshot.")
-        return 0
+        raise RuntimeError("Confluence sync incomplete; existing indexed snapshot was preserved.")
     chunks = chunk_documents(pages)
     return (store or get_vector_store()).sync_space_documents(chunks, SPACE_KEY)
 
