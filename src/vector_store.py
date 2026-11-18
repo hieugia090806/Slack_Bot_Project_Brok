@@ -229,6 +229,12 @@ class PostgresVectorStore:
                     ]
                     changed_vectors = iter(_embed([chunk["content"] for chunk in changed]))
                     rows = []
+                    active_page_ids = {
+                        str(chunk.get("metadata", {}).get("page_id"))
+                        for chunk in chunks
+                        if chunk.get("metadata", {}).get("page_id") is not None
+                    }
+                    active_chunk_ids = [chunk_id for chunk_id, _ in identified_chunks]
                     for chunk_id, chunk in identified_chunks:
                         if chunk_id in existing and existing[chunk_id][0] == chunk["content"]:
                             vector_literal = existing[chunk_id][1]
@@ -237,11 +243,39 @@ class PostgresVectorStore:
                             vector_literal = "[" + ",".join(str(value) for value in vector) + "]"
                         rows.append((chunk_id, chunk["content"], Json(chunk.get("metadata", {})), vector_literal))
 
-                    cursor.execute("DELETE FROM public.document_chunks WHERE metadata->>'space_key' = %s", (space_key,))
+                    # The fetched snapshot is complete, so remove stale page IDs
+                    # explicitly before replacing the active space snapshot.
+                    if active_page_ids:
+                        cursor.execute(
+                            "DELETE FROM public.document_chunks WHERE metadata->>'space_key' = %s AND (metadata->>'page_id' IS NULL OR metadata->>'page_id' <> ALL(%s))",
+                            (space_key, list(active_page_ids)),
+                        )
+                    else:
+                        # A completed empty fetch means all pages in this space
+                        # were removed; incomplete fetches are rejected upstream.
+                        cursor.execute(
+                            "DELETE FROM public.document_chunks WHERE metadata->>'space_key' = %s",
+                            (space_key,),
+                        )
+                    # Prune old chunk IDs for active pages that were re-chunked.
+                    if active_chunk_ids:
+                        cursor.execute(
+                            "DELETE FROM public.document_chunks WHERE metadata->>'space_key' = %s AND id <> ALL(%s)",
+                            (space_key, active_chunk_ids),
+                        )
+                    elif active_page_ids:
+                        cursor.execute(
+                            "DELETE FROM public.document_chunks WHERE metadata->>'space_key' = %s",
+                            (space_key,),
+                        )
                     if rows:
                         cursor.executemany(
                             """INSERT INTO public.document_chunks (id, content, metadata, embedding)
-                               VALUES (%s, %s, %s, %s::vector)""",
+                               VALUES (%s, %s, %s, %s::vector)
+                               ON CONFLICT (id) DO UPDATE SET
+                                   content = EXCLUDED.content,
+                                   metadata = EXCLUDED.metadata,
+                                   embedding = EXCLUDED.embedding""",
                             rows,
                         )
         except Exception:
