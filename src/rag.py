@@ -95,9 +95,11 @@ def _gemini_answer(query: str, matches: list[dict[str, Any]]) -> str:
                     temperature=0.1,
                     system_instruction=(
                         "Answer only using facts explicitly stated in the provided Confluence context. "
-                        "If the answer is absent, state that clearly without guessing. Keep answers concise: "
-                        "answer the question directly, avoid repeating facts, use short bullets for names or lists, "
-                        "and give a brief summary before details for broad questions. Do not output citations."
+                        "If the answer is absent, state that clearly without guessing. Format every final answer "
+                        "for Slack mrkdwn: never use Markdown headings (#, ##, or ###), use single asterisks "
+                        "for bold labels (*Summary:*), never use double asterisks, and use underscores for italics. "
+                        "Keep the response concise, scannable, and suitable for a Slack thread; answer directly, "
+                        "avoid repetition, and use short bullets for lists. Do not output citations."
                     ),
                 ),
             )
