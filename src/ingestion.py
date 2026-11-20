@@ -158,13 +158,17 @@ def fetch_confluence_pages() -> list[dict[str, Any]]:
         pages: list[dict[str, Any]] = []
         filtered_count = 0
         for space_key in target_spaces:
-            space_pages, status, filtered = _fetch_pages(
-                session, base_url, HTTPBasicAuth(username, token), space_key
-            )
-            if status != 200:
-                raise RuntimeError(f"Confluence fetch failed for space {space_key}: HTTP {status}")
-            pages.extend(space_pages)
-            filtered_count += filtered
+            try:
+                space_pages, status, filtered = _fetch_pages(
+                    session, base_url, HTTPBasicAuth(username, token), space_key
+                )
+                if status != 200:
+                    print(f"WARNING: Confluence fetch incomplete for {space_key}: HTTP {status}; continuing with other spaces.")
+                    continue
+                pages.extend(space_pages)
+                filtered_count += filtered
+            except (requests.RequestException, ValueError, KeyError) as exc:
+                print(f"WARNING: Could not fetch Confluence space {space_key}: {exc}; continuing with other spaces.")
         sanitized_count = sum(bool(page.get("text", "").strip()) for page in pages)
         print(f"Confluence {target_spaces}: fetched {len(pages)} active pages; filtered archived/superseded pages: {filtered_count}; sanitized non-empty pages: {sanitized_count}.")
         return pages
@@ -184,17 +188,21 @@ def _fetch_confluence_snapshot() -> tuple[dict[str, list[dict[str, Any]]], dict[
     pages_by_space: dict[str, list[dict[str, Any]]] = {}
     complete_by_space: dict[str, bool] = {}
     filtered_by_space: dict[str, int] = {}
-    try:
-        auth = HTTPBasicAuth(username, token)
-        for space_key in target_spaces:
+    auth = HTTPBasicAuth(username, token)
+    for space_key in target_spaces:
+        try:
             pages, status_code, filtered_count = _fetch_pages(session, base_url, auth, space_key)
             pages_by_space[space_key] = pages
             complete_by_space[space_key] = status_code == 200
             filtered_by_space[space_key] = filtered_count
-        return pages_by_space, complete_by_space, filtered_by_space
-    except (requests.RequestException, ValueError, KeyError) as exc:
-        print(f"Error connecting to Confluence API: {exc}")
-        return pages_by_space, {space: False for space in target_spaces}, filtered_by_space
+            if status_code != 200:
+                print(f"WARNING: Confluence sync incomplete for {space_key}: HTTP {status_code}; its stored snapshot will be preserved.")
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            print(f"WARNING: Could not fetch Confluence space {space_key}: {exc}; its stored snapshot will be preserved.")
+            pages_by_space[space_key] = []
+            complete_by_space[space_key] = False
+            filtered_by_space[space_key] = 0
+    return pages_by_space, complete_by_space, filtered_by_space
 
 
 def test_confluence_connection() -> dict[str, Any]:
@@ -263,6 +271,7 @@ def ingest_local_docs(
         vector_store = store or get_vector_store()
         indexed_count = 0
         failed_spaces = []
+        successful_spaces = []
         active_pages = 0
         filtered_count = 0
         for space_key in target_spaces:
@@ -272,18 +281,24 @@ def ingest_local_docs(
             pages = pages_by_space.get(space_key, [])
             active_pages += len(pages)
             filtered_count += filtered_by_space.get(space_key, 0)
-            indexed_count += vector_store.sync_space_documents(chunk_documents(pages), space_key)
-        if failed_spaces:
-            raise RuntimeError(f"Confluence sync incomplete for spaces: {', '.join(failed_spaces)}")
+            try:
+                indexed_count += vector_store.sync_space_documents(chunk_documents(pages), space_key)
+                successful_spaces.append(space_key)
+            except Exception as exc:
+                failed_spaces.append(space_key)
+                print(f"WARNING: Could not update vector snapshot for {space_key}; continuing with other spaces: {exc}")
         duration = time.time() - started_at
+        status = "Success" if not failed_spaces else ("Partial" if successful_spaces else "Failed")
         print(
-            f"✅ [Sync] Status: Success | Freshness: {synced_at} | "
-            f"Trigger: {trigger} | "
-            f"Spaces: {target_spaces} | Active pages: {active_pages} | Active chunks indexed: {indexed_count} | "
+            f"[Sync] Status: {status} | Freshness: {synced_at} | "
+            f"Trigger: {trigger} | Spaces: {target_spaces} | Synced spaces: {successful_spaces} | "
+            f"Failed spaces: {failed_spaces} | Active pages: {active_pages} | Active chunks indexed: {indexed_count} | "
             f"Archived/superseded pages filtered: {filtered_count} | "
-            f"Stale page/chunk pruning: completed | Duration: {duration:.2f}s",
+            f"Stale page/chunk pruning: {'completed' if successful_spaces else 'not completed'} | Duration: {duration:.2f}s",
             flush=True,
         )
+        if not successful_spaces and failed_spaces:
+            raise RuntimeError(f"Confluence sync failed for spaces: {', '.join(failed_spaces)}")
         return indexed_count
     except Exception as exc:
         duration = time.time() - started_at

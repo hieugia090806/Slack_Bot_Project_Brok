@@ -31,17 +31,20 @@ _sync_in_progress = False
 def run_ingestion_sync(trigger: str = "manual") -> int:
     """Run ingestion and record completion time for lazy-sync gating."""
     global _last_sync_at, _sync_in_progress
-    with _ingestion_lock:
-        try:
-            count = ingest_local_docs(trigger=trigger)
-        except Exception:
-            with _sync_lock:
-                _sync_in_progress = False
-            raise
     with _sync_lock:
-        _last_sync_at = datetime.now(timezone.utc)
-        _sync_in_progress = False
-    return count
+        if _sync_in_progress:
+            logger.info("Skipped duplicate %s sync request; a sync is already running", trigger)
+            return 0
+        _sync_in_progress = True
+    try:
+        with _ingestion_lock:
+            count = ingest_local_docs(trigger=trigger)
+        with _sync_lock:
+            _last_sync_at = datetime.now(timezone.utc)
+        return count
+    finally:
+        with _sync_lock:
+            _sync_in_progress = False
 
 
 def schedule_startup_sync():
@@ -58,9 +61,12 @@ def schedule_startup_sync():
         except Exception:
             logger.exception("Could not inspect vector store count before startup sync")
         # Always refresh at startup, which also repairs an empty store and prunes stale pages.
-        return run_ingestion_sync(trigger="startup")
+        return _run_claimed_sync(trigger="startup")
 
     with _sync_lock:
+        if _sync_in_progress:
+            logger.info("Skipped duplicate startup sync request; a sync is already running")
+            return None
         _sync_in_progress = True
     try:
         return answer_pool.submit(startup_sync)
@@ -82,7 +88,7 @@ def maybe_schedule_lazy_sync() -> None:
             return
         _sync_in_progress = True
     try:
-        answer_pool.submit(run_ingestion_sync, "lazy")
+        answer_pool.submit(_run_claimed_sync, "lazy")
         logger.info("Scheduled time-gated Confluence sync")
     except RuntimeError:
         with _sync_lock:
@@ -90,14 +96,32 @@ def maybe_schedule_lazy_sync() -> None:
         logger.exception("Could not schedule time-gated Confluence sync")
 
 
-def _reply_sync(client, channel: str, thread_ts: str) -> None:
+def _run_claimed_sync(trigger: str) -> int:
+    """Execute a sync whose in-progress slot was claimed by its scheduler."""
+    global _last_sync_at, _sync_in_progress
     try:
-        count = run_ingestion_sync(trigger="manual")
+        with _ingestion_lock:
+            count = ingest_local_docs(trigger=trigger)
+        with _sync_lock:
+            _last_sync_at = datetime.now(timezone.utc)
+        return count
+    finally:
+        with _sync_lock:
+            _sync_in_progress = False
+
+
+def _reply_sync_claimed(client, channel: str, thread_ts: str) -> None:
+    """Reply to a manual sync whose coordinator slot is already claimed."""
+    try:
+        count = _run_claimed_sync("manual")
         message = f"Confluence sync complete. Indexed {count} chunks."
     except Exception:
         logger.exception("Manual Confluence sync failed")
         message = "Confluence sync failed. Please check the service logs and try again."
-    client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=message)
+    try:
+        client.chat_postMessage(channel=channel, thread_ts=thread_ts, text=message)
+    except Exception:
+        logger.exception("Could not send manual sync status to Slack")
 
 
 def _is_sync_command(query: str) -> bool:
@@ -147,7 +171,22 @@ def _submit_query(client, event: dict, query: str):
     if not user_id or not query:
         return
     if _is_sync_command(query):
-        answer_pool.submit(_reply_sync, client, channel, thread_ts)
+        with _sync_lock:
+            already_running = _sync_in_progress
+            if not already_running:
+                _sync_in_progress = True
+        if already_running:
+            answer_pool.submit(client.chat_postMessage, channel=channel, thread_ts=thread_ts,
+                               text="A Confluence sync is already in progress.")
+        else:
+            try:
+                answer_pool.submit(_reply_sync_claimed, client, channel, thread_ts)
+            except RuntimeError:
+                with _sync_lock:
+                    _sync_in_progress = False
+                logger.exception("Could not schedule manual Confluence sync")
+                answer_pool.submit(client.chat_postMessage, channel=channel, thread_ts=thread_ts,
+                                   text="Confluence sync could not be scheduled. Please try again.")
         return
     answer_pool.submit(_reply_to_query, client, channel, thread_ts, user_id, query)
 
