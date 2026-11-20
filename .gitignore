@@ -1,8 +1,10 @@
 .env
+
 __pycache__/
-venv/
-.venv/
-*.pyc
-data/
-*.sqlite3
-.env.example
+
+logs/
+
+*.log
+
+.vscode/
+.idea/

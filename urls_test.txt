@@ -1,0 +1,3 @@
+https://docs.katalon.com/katalon-platform/about-katalon-true-platform
+https://docs.katalon.com/katalon-platform/create-tests/create-new-test-cases
+https://docs.katalon.com/katalon-platform/analytics/test-results-failures/investigate-failures
