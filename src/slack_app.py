@@ -165,6 +165,7 @@ def _reply_to_query(client, channel: str, thread_ts: str, user_id: str, query: s
 
 
 def _submit_query(client, event: dict, query: str):
+    global _sync_in_progress
     channel = event["channel"]
     thread_ts = event.get("thread_ts") or event["ts"]
     user_id = event.get("user")
